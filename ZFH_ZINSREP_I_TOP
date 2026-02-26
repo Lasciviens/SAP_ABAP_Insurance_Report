@@ -1,0 +1,7 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZFH_ZINSREP_I_TOP
+*&---------------------------------------------------------------------*
+TABLES: zinsusale, mara, zssb_subs.
+
+CLASS lcl_main DEFINITION DEFERRED.
+DATA go_main TYPE REF TO lcl_main.
