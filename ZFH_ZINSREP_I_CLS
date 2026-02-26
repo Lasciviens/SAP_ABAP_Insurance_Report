@@ -168,7 +168,11 @@ CLASS lcl_main IMPLEMENTATION.
         INTO TABLE @DATA(lt_eban).
     ENDIF.
 
+    DATA: lv_counter TYPE i.
+
     LOOP AT lt_zinsusale ASSIGNING FIELD-SYMBOL(<lfs_zinsusale>).
+
+
 
 * Initialize new row and copy base data
       DATA(ls_report) = VALUE zfh_zinsrep( ).
@@ -338,6 +342,8 @@ CLASS lcl_main IMPLEMENTATION.
         CHECK ls_report-faksp IS NOT INITIAL.
       ENDIF.
 
+      lv_counter = lv_counter + 1.
+      ls_report-counter = lv_counter.
       APPEND ls_report TO me->mt_alv.
 
     ENDLOOP.
@@ -383,6 +389,7 @@ CLASS lcl_main IMPLEMENTATION.
     rs_layout-zebra      = abap_true.
     rs_layout-cwidth_opt = abap_true.
     rs_layout-sel_mode   = 'A'.
+    rs_layout-ctab_fname = 'SCOL'.
   ENDMETHOD.
 
 ENDCLASS.
