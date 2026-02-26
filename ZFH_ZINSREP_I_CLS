@@ -43,6 +43,7 @@ CLASS lcl_main IMPLEMENTATION.
 
   METHOD run.
     me->get_data( ).
+    me->display_alv_0100( ).
     me->call_screen_0100( ).
   ENDMETHOD.
 
