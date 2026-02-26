@@ -1,0 +1,387 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZFH_ZINSREP_I_CLS
+*&---------------------------------------------------------------------*
+
+CLASS lcl_main DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS:
+      get_instance
+        RETURNING
+          VALUE(ro_main) TYPE REF TO lcl_main.
+
+    METHODS: get_data,
+      run,
+      call_screen_0100,
+      display_alv_0100.
+
+  PRIVATE SECTION.
+    CLASS-DATA:
+      mo_instance TYPE REF TO lcl_main.
+
+    CONSTANTS: mc_alv_structure TYPE dd02l-tabname VALUE 'ZFH_ZINSREP',
+               mc_alv_container TYPE dd02l-tabname VALUE 'CON_ALV_MAIN'.
+
+    DATA:
+      mt_alv       TYPE TABLE OF zfh_zinsrep,
+      ms_alv       TYPE zfh_zinsrep,
+      mo_container TYPE REF TO cl_gui_custom_container,
+      mo_alv_grid  TYPE REF TO cl_gui_alv_grid.
+
+    METHODS:
+      f_cat CHANGING ct_fcat TYPE lvc_t_fcat,
+      layout RETURNING VALUE(rs_layout) TYPE lvc_s_layo.
+
+ENDCLASS.
+
+CLASS lcl_main IMPLEMENTATION.
+  METHOD get_instance.
+    IF mo_instance IS INITIAL.
+      mo_instance = NEW lcl_main( ).
+    ENDIF.
+    ro_main = mo_instance.
+  ENDMETHOD.
+
+  METHOD run.
+    me->get_data( ).
+    me->call_screen_0100( ).
+  ENDMETHOD.
+
+  METHOD get_data.
+
+    DATA: lr_subscr    TYPE RANGE OF zinsusale-zzsubscr,
+          lr_ebeln     TYPE RANGE OF zinsusale-zz_ebeln,
+          lr_vbeln     TYPE RANGE OF zinsusale-zz_vbeln,
+          lr_ebeln_lif TYPE RANGE OF zinsusale-zz_ebeln_lif,
+          lr_accdoc    TYPE RANGE OF zinsusale-accdocno.
+
+*Subscription Type
+    IF p_up = abap_true AND p_sub = abap_true.
+* If a range is empty, SAP will ignore this range filter and bring all data.
+    ELSEIF p_up = abap_true.
+      lr_subscr = VALUE #( ( sign = 'I' option = 'EQ' low = abap_false ) ).
+    ELSEIF p_sub = abap_true.
+      lr_subscr = VALUE #( ( sign = 'I' option = 'EQ' low = abap_true ) ).
+    ENDIF.
+
+* Check Checkboxes
+    IF p_po = abap_true. " No Purch. order 43
+      lr_ebeln = VALUE #( ( sign = 'I' option = 'EQ' low = space ) ).
+    ENDIF.
+
+    IF p_so = abap_true. "No Sales Order ZFOR
+      lr_vbeln = VALUE #( ( sign = 'I' option = 'EQ' low = space ) ).
+    ENDIF.
+
+    IF p_po45 = abap_true. "No Purch. order 45
+      lr_ebeln_lif = VALUE #( ( sign = 'I' option = 'EQ' low = space ) ).
+    ENDIF.
+
+    IF p_accdoc = abap_true. "No Extra ACC DOC
+      lr_accdoc = VALUE #( ( sign = 'I' option = 'EQ' low = space ) ).
+    ENDIF.
+
+    REFRESH me->mt_alv.
+
+    SELECT * FROM zinsusale
+      INTO TABLE @DATA(lt_zinsusale)
+      WHERE polisenr          IN @s_poli
+        AND butikk            IN @s_butikk
+        AND refnr             IN @s_refnr
+        AND type              IN @s_type
+        AND regdato           IN @s_date
+        AND dato              IN @s_sodate
+        AND regtid            IN @s_time
+        AND reguser           IN @s_user
+        AND regsys            IN @s_regsys
+        AND insuid            IN @s_insr
+        AND zpolstatus        IN @s_status
+        AND zzsent            IN @s_sent
+        AND aondate           IN @s_sdate
+        AND brand_id          IN @s_brand
+        AND zzlifnr           IN @s_lifnr
+        AND zzssbstatus       IN @s_scsta
+        AND zzsubscription_id IN @s_scrid
+        AND zzsubscr          IN @lr_subscr
+        AND zz_ebeln          IN @lr_ebeln
+        AND zz_vbeln          IN @lr_vbeln
+        AND zz_ebeln_lif      IN @lr_ebeln_lif
+        AND accdocno          IN @lr_accdoc.
+
+    CHECK lt_zinsusale IS NOT INITIAL.
+
+*----To use For all entries instead of Loop+Select Single; I need to convert ZINSUSALE-INSUID to Mara type..---*
+    TYPES: BEGIN OF ty_matnr_key,
+             matnr TYPE matnr,
+           END OF ty_matnr_key.
+
+    DATA: lt_matnr_keys TYPE TABLE OF ty_matnr_key.
+
+    lt_matnr_keys = VALUE #( FOR <ls_zins> IN lt_zinsusale
+                                 ( matnr = CONV matnr( <ls_zins>-insuid ) ) ).
+
+    SORT lt_matnr_keys BY matnr.
+    DELETE ADJACENT DUPLICATES FROM lt_matnr_keys COMPARING matnr.
+
+    IF lt_matnr_keys IS NOT INITIAL.
+      SELECT matnr, zzmatnr
+        FROM mara
+        FOR ALL ENTRIES IN @lt_matnr_keys
+        WHERE matnr EQ @lt_matnr_keys-matnr
+        INTO TABLE @DATA(lt_mara).
+    ENDIF.
+*---------------------End Of Mara section-------------------------------------*
+
+*---Find price for PO45 & PO43 EKKO & EKPO----*
+    SELECT ekpo~ebeln, ekpo~ebelp, ekpo~netpr, ekko~waers
+      FROM ekpo
+      INNER JOIN ekko ON ekko~ebeln = ekpo~ebeln
+      FOR ALL ENTRIES IN @lt_zinsusale
+      WHERE ( ekpo~ebeln = @lt_zinsusale-zz_ebeln     AND ekpo~ebelp = @lt_zinsusale-zz_ebelp )
+         OR ( ekpo~ebeln = @lt_zinsusale-zz_ebeln_lif AND ekpo~ebelp = @lt_zinsusale-zz_ebelp_lif )
+      INTO TABLE @DATA(lt_purchase_docs).
+
+*---Find SO ZFOR Price (VBAK / VBAP)----*
+    SELECT vbap~vbeln, vbap~posnr, vbap~netpr, vbak~waerk, vbap~faksp
+      FROM vbap
+      INNER JOIN vbak ON vbak~vbeln = vbap~vbeln
+      FOR ALL ENTRIES IN @lt_zinsusale
+      WHERE vbap~vbeln = @lt_zinsusale-zz_vbeln
+        AND vbap~posnr = @lt_zinsusale-zz_posnr
+      INTO TABLE @DATA(lt_sales_docs).
+
+*---Find Purchase Req. (VBEP)----*
+    SELECT vbeln, posnr, banfn, bnfpo
+      FROM vbep
+      FOR ALL ENTRIES IN @lt_zinsusale
+      WHERE vbeln = @lt_zinsusale-zz_vbeln
+        AND posnr = @lt_zinsusale-zz_posnr
+      INTO TABLE @DATA(lt_vbep).
+
+*---Source of Supply Check----*
+    IF lt_vbep IS NOT INITIAL.
+      SELECT banfn, bnfpo, infnr
+        FROM eban
+        FOR ALL ENTRIES IN @lt_vbep
+        WHERE banfn = @lt_vbep-banfn
+          AND bnfpo = @lt_vbep-bnfpo
+        INTO TABLE @DATA(lt_eban).
+    ENDIF.
+
+    LOOP AT lt_zinsusale ASSIGNING FIELD-SYMBOL(<lfs_zinsusale>).
+
+* Initialize new row and copy base data
+      DATA(ls_report) = VALUE zfh_zinsrep( ).
+      ls_report = CORRESPONDING #( <lfs_zinsusale> ).
+
+* Determine Country, Sales Org, and Price Limit based on Store prefix
+      DATA: lv_limit TYPE p DECIMALS 2 VALUE '1.00',
+            lv_vkorg TYPE vkorg.
+
+      CASE <lfs_zinsusale>-butikk(1).
+        WHEN '1'.
+          ls_report-land = 'NO'.
+          lv_vkorg       = '1000'.
+        WHEN '3'.
+          ls_report-land = 'DK'.
+          lv_vkorg       = '3000'.
+        WHEN '4'.
+          ls_report-land = 'FI'.
+          lv_vkorg       = '4000'.
+          lv_limit       = '0.10'.
+        WHEN '7'.
+          ls_report-land = 'SE'.
+          lv_vkorg       = '7000'.
+      ENDCASE.
+
+      ls_report-insuid = |{ <lfs_zinsusale>-insuid ALPHA = OUT }|.
+
+* -----------------------------------------------------------------
+* Elguide No
+      ASSIGN lt_matnr_keys[ matnr = <lfs_zinsusale>-insuid ] TO FIELD-SYMBOL(<ls_matnr_key>).
+      IF sy-subrc = 0.
+        ASSIGN lt_mara[ matnr = <ls_matnr_key>-matnr ] TO FIELD-SYMBOL(<ls_mara>).
+        IF sy-subrc = 0.
+          ls_report-zzmatnr = <ls_mara>-zzmatnr.
+        ENDIF.
+      ENDIF.
+
+* PO43
+      ASSIGN lt_purchase_docs[ ebeln = <lfs_zinsusale>-zz_ebeln
+                               ebelp = <lfs_zinsusale>-zz_ebelp ] TO FIELD-SYMBOL(<ls_po43>).
+      IF sy-subrc = 0.
+        ls_report-netpr = <ls_po43>-netpr.
+        ls_report-waers = <ls_po43>-waers.
+      ENDIF.
+
+* SO ZFOR
+      ASSIGN lt_sales_docs[ vbeln = <lfs_zinsusale>-zz_vbeln
+                            posnr = <lfs_zinsusale>-zz_posnr ] TO FIELD-SYMBOL(<ls_so>).
+      IF sy-subrc = 0.
+        ls_report-netprso = <ls_so>-netpr.
+        ls_report-waerk   = <ls_so>-waerk.
+        ls_report-faksp   = <ls_so>-faksp.
+      ENDIF.
+
+* PO45
+      ASSIGN lt_purchase_docs[ ebeln = <lfs_zinsusale>-zz_ebeln_lif
+                               ebelp = <lfs_zinsusale>-zz_ebelp_lif ] TO FIELD-SYMBOL(<ls_po45>).
+      IF sy-subrc = 0.
+        ls_report-netprpo45 = <ls_po45>-netpr.
+      ENDIF.
+
+* PR VBEP & EBAN (Source of Supply)
+      ASSIGN lt_vbep[ vbeln = <lfs_zinsusale>-zz_vbeln
+                      posnr = <lfs_zinsusale>-zz_posnr ] TO FIELD-SYMBOL(<ls_vbep>).
+      IF sy-subrc = 0.
+        ls_report-banfn = <ls_vbep>-banfn.
+        ls_report-bnfpo = <ls_vbep>-bnfpo.
+
+        ASSIGN lt_eban[ banfn = ls_report-banfn
+                        bnfpo = ls_report-bnfpo ] TO FIELD-SYMBOL(<ls_eban>).
+        IF sy-subrc = 0 AND <ls_eban>-infnr IS INITIAL.
+          ls_report-znosource45 = abap_true.
+        ENDIF.
+      ENDIF.
+
+* -------------------------Error Handling and Colorization--------------------------------*
+      DATA: lt_color TYPE lvc_t_scol,
+            ls_color TYPE lvc_s_scol,
+            f_skip   TYPE abap_bool.
+
+      CLEAR: ls_color, lt_color, f_skip.
+
+      IF ( ls_report-zz_ebeln     IS INITIAL OR
+           abs( ls_report-netpr ) <= lv_limit OR
+           ls_report-zz_vbeln     IS INITIAL OR
+           abs( ls_report-netprso ) <= lv_limit OR
+           ls_report-zz_ebeln_lif IS INITIAL OR
+           abs( ls_report-netprpo45 ) <= lv_limit OR
+           ls_report-zpolstatus   = 'E' OR
+           ls_report-zpolstatus   = 'W' )
+         AND ls_report-zpolstatus NE 'N'.
+
+* SSB Status = 7
+        IF NOT ( ls_report-zzsubscr = abap_true AND ls_report-zzssbstatus = '7' ).
+          ls_report-f_error = abap_true.
+
+          ls_color-color-col = 6. " Red
+          ls_color-color-int = 1.
+          ls_color-color-inv = 1.
+          APPEND ls_color TO lt_color.
+          ls_report-scol = lt_color.
+          f_skip = abap_true.
+        ENDIF.
+      ENDIF.
+
+* Yellow if they have docs
+      IF ls_report-accdocno IS INITIAL AND ls_report-zpolstatus NE 'N' AND f_skip NE abap_true.
+        IF NOT ( ls_report-zzsubscr = abap_true AND ls_report-zzssbstatus = '7' ).
+          ls_report-f_error = abap_true.
+
+          ls_color-color-col = 3. " Yellow
+          ls_color-color-int = 1.
+          ls_color-color-inv = 1.
+          APPEND ls_color TO lt_color.
+          ls_report-scol = lt_color.
+        ENDIF.
+      ENDIF.
+
+* -----------------------Pricing--------------------------*
+
+      DATA: lv_pb00_fix  TYPE zfixed_price,
+            lv_perc_pb00 TYPE zperctpb.
+
+      CLEAR: lv_pb00_fix, lv_perc_pb00.
+
+      IF ls_report-f_error = abap_true.
+        CALL FUNCTION 'Z_CALC_FORS_PRICE'
+          EXPORTING
+            in_vkorg    = lv_vkorg
+            in_matkl    = <lfs_zinsusale>-cgm
+            in_insuid   = <lfs_zinsusale>-insuid
+            in_price    = <lfs_zinsusale>-matnrprice
+          IMPORTING
+            ex_pb00     = lv_perc_pb00
+            ex_pb00_fix = lv_pb00_fix
+          EXCEPTIONS
+            not_found   = 1
+            OTHERS      = 2.
+
+        IF sy-subrc <> 0.
+          ls_report-zpercmis = abap_true.
+        ENDIF.
+      ENDIF.
+
+* Assign the calculated value (it will be 0 if the function didn't run)
+      ls_report-acs_fix = lv_pb00_fix.
+      ls_report-insratewacs = abs( ls_report-insrate ) - ls_report-acs_fix.
+
+* -----------------------------------------------------------------*
+      IF p_popr = abap_true.
+        CHECK ls_report-netpr IS INITIAL OR abs( ls_report-netpr ) <= lv_limit.
+      ENDIF.
+
+      IF p_sopr = abap_true.
+        CHECK ls_report-netprso IS INITIAL OR abs( ls_report-netprso ) <= lv_limit.
+      ENDIF.
+
+      IF p_po45pr = abap_true.
+        CHECK ls_report-netprpo45 IS INITIAL OR abs( ls_report-netprpo45 ) <= lv_limit.
+      ENDIF.
+
+      IF p_err = abap_true.
+        CHECK ls_report-f_error = abap_true.
+      ENDIF.
+
+      IF p_blk = abap_true.
+        CHECK ls_report-faksp IS NOT INITIAL.
+      ENDIF.
+
+      APPEND ls_report TO me->mt_alv.
+
+    ENDLOOP.
+
+  ENDMETHOD.
+
+  METHOD call_screen_0100.
+    CALL SCREEN 0100.
+  ENDMETHOD.
+
+  METHOD display_alv_0100.
+    IF mo_container IS INITIAL.
+      mo_container = NEW #( container_name = mc_alv_container ).
+      mo_alv_grid  = NEW #( i_parent = mo_container ).
+
+      DATA(lt_fcat) = VALUE lvc_t_fcat( ).
+      DATA(ls_layout) = VALUE lvc_s_layo( ).
+
+      me->f_cat( CHANGING ct_fcat = lt_fcat ).
+      ls_layout = me->layout( ).
+
+      mo_alv_grid->set_table_for_first_display(
+              EXPORTING
+                is_layout       = ls_layout
+              CHANGING
+                it_outtab       = me->mt_alv
+                it_fieldcatalog = lt_fcat
+            ).
+    ELSE.
+      mo_alv_grid->refresh_table_display( ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD f_cat.
+    CALL FUNCTION 'LVC_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name = mc_alv_structure
+      CHANGING
+        ct_fieldcat      = ct_fcat.
+  ENDMETHOD.
+
+  METHOD layout.
+    rs_layout-zebra      = abap_true.
+    rs_layout-cwidth_opt = abap_true.
+    rs_layout-sel_mode   = 'A'.
+  ENDMETHOD.
+
+ENDCLASS.
