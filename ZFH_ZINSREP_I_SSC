@@ -1,1 +1,59 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZFH_ZINSREP_I_SSC
+*&---------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK s_type WITH FRAME TITLE TEXT-t01.
+PARAMETERS: p_up  AS CHECKBOX,
+            p_sub AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK s_type.
+*--------------------------------------------------------------------*
 
+SELECTION-SCREEN SKIP 1.
+
+*--------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK zinsusale WITH FRAME TITLE TEXT-t02.
+
+SELECT-OPTIONS: s_date   FOR zinsusale-regdato DEFAULT sy-datum OBLIGATORY,
+                s_sodate FOR zinsusale-dato,
+                s_refnr  FOR zinsusale-refnr,
+                s_time   FOR zinsusale-regtid,
+                s_user   FOR zinsusale-reguser,
+                s_regsys FOR zinsusale-regsys NO INTERVALS,
+                s_lifnr  FOR zinsusale-zzlifnr,
+                s_butikk FOR zinsusale-butikk,
+                s_poli   FOR zinsusale-polisenr,
+                s_insr   FOR zinsusale-insuid,
+                s_type   FOR zinsusale-type NO INTERVALS,
+                s_status FOR zinsusale-zpolstatus NO INTERVALS,
+                s_sent   FOR zinsusale-zzsent NO INTERVALS,
+                s_sdate  FOR zinsusale-aondate,
+                s_brand  FOR mara-brand_id.
+SELECTION-SCREEN END OF BLOCK zinsusale.
+*--------------------------------------------------------------------*
+
+SELECTION-SCREEN SKIP 1.
+
+*--------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK subscription WITH FRAME TITLE TEXT-t03.
+SELECT-OPTIONS: s_scsta FOR zssb_subs-status,
+                s_scrid FOR zssb_subs-subscription_id.
+SELECTION-SCREEN END OF BLOCK subscription.
+*--------------------------------------------------------------------*
+
+SELECTION-SCREEN SKIP 1.
+
+*--------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK check WITH FRAME TITLE TEXT-t04.
+PARAMETERS: p_blk    AS CHECKBOX.
+SELECTION-SCREEN SKIP 1.
+PARAMETERS: p_err    AS CHECKBOX.
+SELECTION-SCREEN SKIP 1.
+
+PARAMETERS: p_po     AS CHECKBOX,
+            p_popr   AS CHECKBOX,
+            p_so     AS CHECKBOX,
+            p_sopr   AS CHECKBOX,
+            p_po45   AS CHECKBOX,
+            p_po45pr AS CHECKBOX,
+            p_accdoc AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK check.
+*--------------------------------------------------------------------*
