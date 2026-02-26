@@ -1,0 +1,15 @@
+*&---------------------------------------------------------------------*
+*& Report ZFH_ZINSREP
+*& This report check insurance documents and report on error
+REPORT zfh_zinsrep.
+
+INCLUDE zfh_zinsrep_i_top.
+INCLUDE zfh_zinsrep_i_ssc.
+INCLUDE zfh_zinsrep_i_cls.
+INCLUDE zfh_zinsrep_i_0100.
+
+INITIALIZATION.
+  go_main = lcl_main=>get_instance( ).
+
+START-OF-SELECTION.
+  go_main->run( ).
