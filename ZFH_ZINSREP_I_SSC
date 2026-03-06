@@ -12,7 +12,7 @@ SELECTION-SCREEN SKIP 1.
 *--------------------------------------------------------------------*
 SELECTION-SCREEN BEGIN OF BLOCK zinsusale WITH FRAME TITLE TEXT-t02.
 
-SELECT-OPTIONS: s_date   FOR zinsusale-regdato DEFAULT sy-datum OBLIGATORY,
+SELECT-OPTIONS: s_date   FOR zinsusale-regdato DEFAULT sy-subrc TO sy-datum OBLIGATORY,
                 s_sodate FOR zinsusale-dato,
                 s_refnr  FOR zinsusale-refnr,
                 s_time   FOR zinsusale-regtid,
