@@ -9,10 +9,15 @@ CLASS lcl_main DEFINITION.
         RETURNING
           VALUE(ro_main) TYPE REF TO lcl_main.
 
-    METHODS: get_data,
+    METHODS:
+      get_data,
       run,
       call_screen_0100,
-      display_alv_0100.
+      display_alv_0100,
+      tb_send_mail,
+      tb_reset_flag,
+      tb_find_imei,
+      tb_details      .
 
   PRIVATE SECTION.
     CLASS-DATA:
@@ -27,9 +32,36 @@ CLASS lcl_main DEFINITION.
       mo_container TYPE REF TO cl_gui_custom_container,
       mo_alv_grid  TYPE REF TO cl_gui_alv_grid.
 
+    DATA:
+      mt_messages TYPE bapiret2_t. "Pop-up message
+
     METHODS:
       f_cat CHANGING ct_fcat TYPE lvc_t_fcat,
-      layout RETURNING VALUE(rs_layout) TYPE lvc_s_layo.
+
+      layout RETURNING VALUE(rs_layout) TYPE lvc_s_layo,
+
+      alv_toolbar RETURNING VALUE(rt_exclude) TYPE ui_functions,
+
+      handle_user_command FOR EVENT user_command OF cl_gui_alv_grid
+        IMPORTING e_ucomm,
+
+      handle_toolbar FOR EVENT toolbar OF cl_gui_alv_grid
+        IMPORTING e_object e_interactive,
+
+      handle_hotspot_click
+                  FOR EVENT hotspot_click OF cl_gui_alv_grid
+        IMPORTING e_row_id e_column_id,
+
+      handle_data_changed_finished FOR EVENT data_changed_finished OF cl_gui_alv_grid
+        IMPORTING e_modified et_good_cells sender,
+
+      get_selected_rows
+        RETURNING VALUE(rt_rows) TYPE lvc_t_row,
+
+      add_message IMPORTING iv_type TYPE bapi_mtype
+                            iv_text TYPE string,
+
+      display_all_messages.
 
 ENDCLASS.
 
@@ -110,7 +142,7 @@ CLASS lcl_main IMPLEMENTATION.
 
     CHECK lt_zinsusale IS NOT INITIAL.
 
-*----To use For all entries instead of Loop+Select Single; I need to convert ZINSUSALE-INSUID to Mara type..---*
+*----convert ZINSUSALE-INSUID to Mara type..---*
     TYPES: BEGIN OF ty_matnr_key,
              matnr TYPE matnr,
            END OF ty_matnr_key.
@@ -171,8 +203,6 @@ CLASS lcl_main IMPLEMENTATION.
     DATA: lv_counter TYPE i.
 
     LOOP AT lt_zinsusale ASSIGNING FIELD-SYMBOL(<lfs_zinsusale>).
-
-
 
 * Initialize new row and copy base data
       DATA(ls_report) = VALUE zfh_zinsrep( ).
@@ -344,10 +374,9 @@ CLASS lcl_main IMPLEMENTATION.
 
       lv_counter = lv_counter + 1.
       ls_report-counter = lv_counter.
+
       APPEND ls_report TO me->mt_alv.
-
     ENDLOOP.
-
   ENDMETHOD.
 
   METHOD call_screen_0100.
@@ -359,19 +388,30 @@ CLASS lcl_main IMPLEMENTATION.
       mo_container = NEW #( container_name = mc_alv_container ).
       mo_alv_grid  = NEW #( i_parent = mo_container ).
 
-      DATA(lt_fcat) = VALUE lvc_t_fcat( ).
+      SET HANDLER me->handle_user_command          FOR mo_alv_grid.
+      SET HANDLER me->handle_toolbar               FOR mo_alv_grid.
+      SET HANDLER me->handle_hotspot_click         FOR mo_alv_grid.
+      SET HANDLER me->handle_data_changed_finished FOR mo_alv_grid.
+
+      mo_alv_grid->register_edit_event(
+        EXPORTING
+          i_event_id = cl_gui_alv_grid=>mc_evt_modified ).
+
+      DATA(lt_fcat)   = VALUE lvc_t_fcat( ).
       DATA(ls_layout) = VALUE lvc_s_layo( ).
+
+      DATA(lt_exclude) = me->alv_toolbar( ).
 
       me->f_cat( CHANGING ct_fcat = lt_fcat ).
       ls_layout = me->layout( ).
 
       mo_alv_grid->set_table_for_first_display(
               EXPORTING
-                is_layout       = ls_layout
+                is_layout            = ls_layout
+                it_toolbar_excluding = lt_exclude
               CHANGING
                 it_outtab       = me->mt_alv
-                it_fieldcatalog = lt_fcat
-            ).
+                it_fieldcatalog = lt_fcat ).
     ELSE.
       mo_alv_grid->refresh_table_display( ).
     ENDIF.
@@ -383,6 +423,17 @@ CLASS lcl_main IMPLEMENTATION.
         i_structure_name = mc_alv_structure
       CHANGING
         ct_fieldcat      = ct_fcat.
+
+    LOOP AT ct_fcat ASSIGNING FIELD-SYMBOL(<lfs_fcat>).
+      CASE <lfs_fcat>-fieldname.
+        WHEN 'PARTNER'.
+          <lfs_fcat>-hotspot = abap_true.
+        WHEN 'ZCOMMENT'.
+*          <lfs_fcat>-edit = abap_true.
+        WHEN 'ZZBPREF'.
+          <lfs_fcat>-hotspot = abap_true.
+      ENDCASE.
+    ENDLOOP.
   ENDMETHOD.
 
   METHOD layout.
@@ -390,6 +441,294 @@ CLASS lcl_main IMPLEMENTATION.
     rs_layout-cwidth_opt = abap_true.
     rs_layout-sel_mode   = 'A'.
     rs_layout-ctab_fname = 'SCOL'.
+  ENDMETHOD.
+
+  METHOD alv_toolbar.
+    rt_exclude = VALUE #(
+    ( cl_gui_alv_grid=>mc_fc_loc_delete_row )
+    ( cl_gui_alv_grid=>mc_fc_loc_insert_row )
+    ( cl_gui_alv_grid=>mc_fc_loc_cut )
+    ( cl_gui_alv_grid=>mc_fc_loc_append_row )
+    ( cl_gui_alv_grid=>mc_fc_loc_move_row )
+    ( cl_gui_alv_grid=>mc_fc_loc_paste_new_row )
+    ( cl_gui_alv_grid=>mc_fc_loc_copy_row )
+    ).
+  ENDMETHOD.
+
+  METHOD handle_user_command.
+    CASE e_ucomm.
+      WHEN 'BUT_MAIL'.
+        me->tb_send_mail( ).
+
+      WHEN 'BUT_RESET'.
+        me->tb_reset_flag( ).
+
+      WHEN 'BUT_DETAIL'.
+        me->tb_details( ).
+
+      WHEN 'BUT_IMEI'.
+        me->tb_find_imei( ).
+    ENDCASE.
+  ENDMETHOD.
+
+  METHOD handle_toolbar.
+    DATA: ls_toolbar TYPE stb_button.
+    " Icon finds in se38 - SHOWICON
+
+    ls_toolbar-function  = 'BUT_CHANGE'.
+    ls_toolbar-icon      = icon_toggle_display_change.
+    ls_toolbar-quickinfo = 'Display - Change'.
+    ls_toolbar-butn_type = 0.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+
+    " Seperate
+    ls_toolbar-function  = 'SEPARATOR'.
+    ls_toolbar-butn_type = 3. " 3 = Separator
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+
+    ls_toolbar-function  = 'BUT_MAIL'.       " Catch function
+    ls_toolbar-icon      =  icon_eml.
+    ls_toolbar-quickinfo = 'Send mail to VIP'.
+    ls_toolbar-text      = 'Send Mail '.
+    ls_toolbar-butn_type = 0.                 " 0 = Normal button
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+
+    ls_toolbar-function  = 'BUT_RESET'.
+    ls_toolbar-icon      = icon_deselect_block.
+    ls_toolbar-quickinfo = 'Reset Requested Flag'.
+    ls_toolbar-text      = 'Reset '.
+    ls_toolbar-butn_type = 0.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+
+    ls_toolbar-function  = 'BUT_DETAIL'.
+    ls_toolbar-icon      =  icon_doc_header_detail.
+    ls_toolbar-quickinfo = 'See details in ZINSUSALE'.
+    ls_toolbar-text      = ' Detail '.
+    ls_toolbar-butn_type = 1.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+
+    ls_toolbar-function  = 'BUT_IMEI'.
+    ls_toolbar-icon      =  icon_change_text.
+    ls_toolbar-quickinfo = 'Find IMEI'.
+    ls_toolbar-text      = 'IMEI'.
+    ls_toolbar-butn_type = 0.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+
+  ENDMETHOD.
+
+  METHOD handle_hotspot_click.
+    " Find the line
+    READ TABLE me->mt_alv INTO DATA(ls_alv) INDEX e_row_id-index.
+    CHECK sy-subrc = 0.
+
+    " Find the colomn
+    CASE e_column_id-fieldname.
+      WHEN 'ZZBPREF'.
+        MESSAGE |Clicked Subscription ID: { ls_alv-zzbpref }| TYPE 'I'.
+      WHEN 'PARTNER'.
+        MESSAGE |Clicked Partner is: { ls_alv-partner } | TYPE 'I'.
+      WHEN 'ZCOMMENT'.
+        MESSAGE |Clicked comment is: { ls_alv-zcomment } | TYPE 'I'.
+    ENDCASE.
+  ENDMETHOD.
+
+  METHOD handle_data_changed_finished.
+    IF e_modified = abap_true. "Anything changed?
+
+      LOOP AT et_good_cells ASSIGNING FIELD-SYMBOL(<lfs_cell>).
+
+        READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX <lfs_cell>-row_id.
+        IF sy-subrc = 0.
+
+          CASE <lfs_cell>-fieldname.
+            WHEN 'ZCOMMENT'.
+              " to update current display
+              <lfs_alv>-zcomment = <lfs_cell>-value.
+
+              UPDATE zinsusale  "DB Update
+                 SET zcomment = @<lfs_alv>-zcomment
+               WHERE polisenr = @<lfs_alv>-polisenr.
+
+              IF sy-subrc = 0.
+                COMMIT WORK.
+              ENDIF.
+          ENDCASE.
+        ENDIF.
+      ENDLOOP.
+
+      mo_alv_grid->refresh_table_display( ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD tb_send_mail.
+
+    DATA(lt_rows) = me->get_selected_rows( ).
+    CHECK lt_rows IS NOT INITIAL.
+
+    LOOP AT lt_rows INTO DATA(ls_row).
+      READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX ls_row-index.
+      IF sy-subrc = 0.
+        " send mail to VIP
+      ENDIF.
+    ENDLOOP.
+
+*      mo_alv_grid->refresh_table_display( ).
+  ENDMETHOD.
+
+  METHOD tb_reset_flag.
+    DATA(lt_rows) = me->get_selected_rows( ).
+    CHECK lt_rows IS NOT INITIAL.
+
+    DATA: lv_success_count TYPE i.
+
+    LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<lfs_rows>). "Loop at selected rows
+      READ TABLE mt_alv INDEX <lfs_rows>-index ASSIGNING FIELD-SYMBOL(<lfs_alv>).
+      CHECK sy-subrc EQ 0."Continue to next row
+
+      UPDATE zupdt_bp_token
+        SET bprequestsent = @space
+        WHERE refnr EQ @<lfs_alv>-refnr.
+
+      IF sy-subrc EQ 0.
+        COMMIT WORK.
+        lv_success_count = lv_success_count + 1.
+        me->add_message(
+          EXPORTING
+            iv_type = 'S'
+            iv_text = |Policy: { <lfs_alv>-polisenr } , Ref nr: { <lfs_alv>-refnr } is resetted | ).
+      ELSE.
+        me->add_message(
+          EXPORTING
+            iv_type = 'E'
+            iv_text = |Could not find { <lfs_alv>-refnr } in table ZUPDT_BP_TOKEN | ).
+      ENDIF.
+
+    ENDLOOP.
+    me->display_all_messages( ).
+*    mo_alv_grid->refresh_table_display( ).
+  ENDMETHOD.
+
+  METHOD tb_find_imei.
+    DATA(lt_rows) = me->get_selected_rows( ).
+    CHECK lt_rows IS NOT INITIAL.
+    DATA lv_imei TYPE sernr.
+    IF lines( lt_rows ) > 1.
+      MESSAGE |Select only 1 line to find IMEI| TYPE 'S' DISPLAY LIKE 'W'.
+      RETURN.
+    ENDIF.
+
+    READ TABLE lt_rows INTO DATA(ls_row) INDEX 1.
+    READ TABLE mt_alv INDEX ls_row-index ASSIGNING FIELD-SYMBOL(<lfs_alv>).
+    CHECK sy-subrc EQ 0.
+
+    " VBFA - VBELV = Refnr && VBTYP_N = 'J' => VEPO VBELN => SER06  VENUM => OBJK OBKNR => Get SERNR as IMEI
+
+    " Gerekirse refnr icin bastaki sifirlari tamamlama (Sistem yapisina gore aktif edebilirsin)
+    " DATA: lv_vbelv TYPE vbeln_von.
+    " lv_vbelv = |{ <lfs_alv>-refnr ALPHA = IN }|.
+
+
+
+    " Senin o efsane rotayı tek bir SELECT ile birlestiriyoruz
+    SELECT SINGLE objk~sernr
+      FROM vbfa
+      INNER JOIN vepo  ON vepo~vbeln  = vbfa~vbeln
+      INNER JOIN ser06 ON ser06~venum = vepo~venum
+      INNER JOIN objk  ON objk~obknr  = ser06~obknr
+      INTO @lv_imei
+      WHERE vbfa~vbelv   = @<lfs_alv>-refnr  " <-- Eğer bulamazsa burayı @lv_vbelv yap
+        AND vbfa~vbtyp_n = 'J'.
+
+    IF sy-subrc EQ 0.
+
+      DATA: lv_answer TYPE c.
+
+      " POP-UP Sorusunu Sor
+      CALL FUNCTION 'POPUP_TO_CONFIRM'
+        EXPORTING
+          titlebar              = 'IMEI Found!'
+          text_question         = |IMEI number { lv_imei } found. Do you want to save it?|
+          text_button_1         = 'OK'
+          text_button_2         = 'NO'
+          display_cancel_button = abap_false
+        IMPORTING
+          answer                = lv_answer.
+
+      " Kullanıcının cevabını kontrol et
+      IF lv_answer = '1'. " 1 = 1. Butona (OK) basıldı
+
+        " DİKKAT: ZINSUSALE tablosundaki IMEI alanının adını (örn: zzimei) kendi tablona göre düzelt!
+        UPDATE zinsusale
+           SET zz_imei     = @lv_imei
+         WHERE polisenr = @<lfs_alv>-polisenr.
+
+        IF sy-subrc = 0.
+          COMMIT WORK.
+
+          " Ekranda da anında görünmesi için ALV alanını güncelle (Varsa)
+          " <lfs_alv>-imei = lv_imei.
+          mo_alv_grid->refresh_table_display( ).
+
+          MESSAGE |IMEI { lv_imei } successfully added to { <lfs_alv>-polisenr }| TYPE 'S'.
+        ELSE.
+          MESSAGE 'Error occurred while updating ZINSUSALE!' TYPE 'S' DISPLAY LIKE 'E'.
+        ENDIF.
+
+      ELSE. " 2 = NO seçildi
+        MESSAGE 'Action cancelled. Nothing changed.' TYPE 'S'.
+      ENDIF.
+
+    ELSE.
+      MESSAGE 'Could not find any IMEI in document flow for this record!' TYPE 'S' DISPLAY LIKE 'W'.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD tb_details.
+    DATA(lt_rows) = me->get_selected_rows( ).
+    CHECK lt_rows IS NOT INITIAL.
+
+  ENDMETHOD.
+
+  METHOD get_selected_rows.
+
+    mo_alv_grid->get_selected_rows( IMPORTING et_index_rows = rt_rows ).
+
+    IF rt_rows IS INITIAL.
+      MESSAGE 'Please, select a line!' TYPE 'S' DISPLAY LIKE 'W'.
+      RETURN.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD add_message.
+    APPEND VALUE #( type       = iv_type
+                    message    = iv_text
+                    id         = '00'
+                    number     = '398'
+                    message_v1 = iv_text ) TO me->mt_messages.
+  ENDMETHOD.
+
+  METHOD display_all_messages.
+    CHECK me->mt_messages IS NOT INITIAL.
+
+    CALL FUNCTION 'FB_MESSAGES_DISPLAY_POPUP'
+      EXPORTING
+*       it_smesg        =
+*       id_smesg_zeile  =
+        it_return       = me->mt_messages
+*       id_send_if_one  =
+      EXCEPTIONS
+        no_messages     = 1
+        popup_cancelled = 2
+        OTHERS          = 3.
+
+    CLEAR me->mt_messages.
   ENDMETHOD.
 
 ENDCLASS.
