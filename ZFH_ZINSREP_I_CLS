@@ -17,7 +17,12 @@ CLASS lcl_main DEFINITION.
       tb_send_mail,
       tb_reset_flag,
       tb_find_imei,
-      tb_details IMPORTING iv_table TYPE tabname     .
+      tb_partner_va05  IMPORTING iv_partner TYPE kunnr,
+      tb_edit_comment  IMPORTING iv_index   TYPE lvc_s_row-index,
+      tb_save_comment,
+      tb_details       IMPORTING iv_table TYPE tabname,
+      add_auto_comment IMPORTING iv_index TYPE i
+                                 iv_text  TYPE string..
 
   PRIVATE SECTION.
     CLASS-DATA:
@@ -38,7 +43,7 @@ CLASS lcl_main DEFINITION.
     METHODS:
       f_cat CHANGING ct_fcat TYPE lvc_t_fcat,
 
-      layout RETURNING VALUE(rs_layout) TYPE lvc_s_layo,
+      layout      RETURNING VALUE(rs_layout) TYPE lvc_s_layo,
 
       alv_toolbar RETURNING VALUE(rt_exclude) TYPE ui_functions,
 
@@ -48,8 +53,7 @@ CLASS lcl_main DEFINITION.
       handle_toolbar FOR EVENT toolbar OF cl_gui_alv_grid
         IMPORTING e_object e_interactive,
 
-      handle_hotspot_click
-                  FOR EVENT hotspot_click OF cl_gui_alv_grid
+      handle_hotspot_click FOR EVENT hotspot_click OF cl_gui_alv_grid
         IMPORTING e_row_id e_column_id,
 
       handle_data_changed_finished FOR EVENT data_changed_finished OF cl_gui_alv_grid
@@ -345,7 +349,7 @@ CLASS lcl_main IMPLEMENTATION.
             not_found   = 1
             OTHERS      = 2.
 
-        IF sy-subrc <> 0.
+        IF sy-subrc NE 0.
           ls_report-zpercmis = abap_true.
         ENDIF.
       ENDIF.
@@ -417,7 +421,7 @@ CLASS lcl_main IMPLEMENTATION.
                 it_outtab       = me->mt_alv
                 it_fieldcatalog = lt_fcat ).
     ELSE.
-      mo_alv_grid->refresh_table_display( ).
+      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
     ENDIF.
   ENDMETHOD.
 
@@ -433,7 +437,7 @@ CLASS lcl_main IMPLEMENTATION.
         WHEN 'PARTNER'.
           <lfs_fcat>-hotspot = abap_true.
         WHEN 'ZCOMMENT'.
-*          <lfs_fcat>-edit = abap_true.
+          <lfs_fcat>-hotspot = abap_true.
         WHEN 'ZZBPREF'.
           <lfs_fcat>-hotspot = abap_true.
       ENDCASE.
@@ -536,12 +540,15 @@ CLASS lcl_main IMPLEMENTATION.
 
     " Find the colomn
     CASE e_column_id-fieldname.
-      WHEN 'ZZBPREF'.
-        MESSAGE |Clicked Subscription ID: { ls_alv-zzbpref }| TYPE 'I'.
       WHEN 'PARTNER'.
-        MESSAGE |Clicked Partner is: { ls_alv-partner } | TYPE 'I'.
+        me->tb_partner_va05( iv_partner = ls_alv-partner ).
+
       WHEN 'ZCOMMENT'.
-        MESSAGE |Clicked comment is: { ls_alv-zcomment } | TYPE 'I'.
+        me->tb_edit_comment( iv_index = e_row_id-index ).
+
+      WHEN 'ZZBPREF'.
+        " Voyado entegrasyonu (Proxy) buraya gelecek!
+        MESSAGE |Clicked Subscription ID: { ls_alv-zzbpref } (Coming soon!)| TYPE 'I'.
     ENDCASE.
   ENDMETHOD.
 
@@ -569,7 +576,7 @@ CLASS lcl_main IMPLEMENTATION.
         ENDIF.
       ENDLOOP.
 
-      mo_alv_grid->refresh_table_display( ).
+      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
     ENDIF.
   ENDMETHOD.
 
@@ -601,7 +608,7 @@ CLASS lcl_main IMPLEMENTATION.
       ENDIF.
     ENDLOOP.
 
-*      mo_alv_grid->refresh_table_display( ).
+*       mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
   ENDMETHOD.
 
   METHOD tb_reset_flag.
@@ -634,7 +641,7 @@ CLASS lcl_main IMPLEMENTATION.
 
     ENDLOOP.
     me->display_all_messages( ).
-*    mo_alv_grid->refresh_table_display( ).
+*     mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
   ENDMETHOD.
 
   METHOD tb_find_imei.
@@ -688,8 +695,8 @@ CLASS lcl_main IMPLEMENTATION.
           COMMIT WORK.
 
           " Update ALV?
-*          " <lfs_alv>-imei = lv_imei.
-*          mo_alv_grid->refresh_table_display( ).
+*           <lfs_alv>-imei = lv_imei.
+*           mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
 
           MESSAGE |IMEI { lv_imei } successfully added to { <lfs_alv>-polisenr }| TYPE 'S'.
         ELSE.
@@ -702,6 +709,47 @@ CLASS lcl_main IMPLEMENTATION.
 
     ELSE.
       MESSAGE 'Could not find any IMEI in document flow for this record!' TYPE 'S' DISPLAY LIKE 'W'.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD tb_partner_va05.
+    " VA05N
+    SUBMIT sd_sales_orders_view
+      WITH skunnr EQ iv_partner
+      WITH sauart EQ 'ZSBD'
+      AND RETURN.
+  ENDMETHOD.
+
+  METHOD tb_edit_comment.
+    gv_row_id = iv_index.
+
+    READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX gv_row_id.
+    IF sy-subrc EQ 0.
+      gv_screen_comment = <lfs_alv>-zcomment.
+    ENDIF.
+
+    CLEAR gv_template.
+    gv_template = 'T0'.
+    CALL SCREEN 0300 STARTING AT 10 10 ENDING AT 105 17.
+  ENDMETHOD.
+
+  METHOD tb_save_comment.
+    READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX gv_row_id.
+    CHECK sy-subrc EQ 0.
+    CHECK <lfs_alv>-zcomment NE gv_screen_comment.
+
+    <lfs_alv>-zcomment = gv_screen_comment.
+    UPDATE zinsusale
+         SET zcomment = @<lfs_alv>-zcomment
+       WHERE polisenr = @<lfs_alv>-polisenr.
+
+    IF sy-subrc EQ 0.
+      COMMIT WORK.
+      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+      MESSAGE 'Comment successfully updated!' TYPE 'S'.
+    ELSE.
+      MESSAGE 'Failed to update database!' TYPE 'S' DISPLAY LIKE 'E'.
     ENDIF.
 
   ENDMETHOD.
@@ -744,8 +792,29 @@ CLASS lcl_main IMPLEMENTATION.
       EXCEPTIONS
         no_values    = 1                " No Values Found
         OTHERS       = 2.
-    IF sy-subrc <> 0.
+    IF sy-subrc NE 0.
       MESSAGE | Could not bring details in { iv_table } | TYPE 'S' DISPLAY LIKE 'E'.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD add_auto_comment.
+    READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX iv_index.
+    CHECK sy-subrc = 0.
+
+    DATA(lv_prefix) = |{ sy-uname } { sy-datum DATE = USER }: |.
+    IF <lfs_alv>-zcomment IS INITIAL.
+      <lfs_alv>-zcomment = |{ lv_prefix }{ iv_text }|.
+    ELSE.
+      <lfs_alv>-zcomment = |{ lv_prefix }{ iv_text } // { <lfs_alv>-zcomment }|.
+    ENDIF.
+
+    UPDATE zinsusale
+       SET zcomment = @<lfs_alv>-zcomment
+     WHERE polisenr = @<lfs_alv>-polisenr.
+
+    IF sy-subrc = 0.
+      COMMIT WORK.
+      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
     ENDIF.
   ENDMETHOD.
 
@@ -772,10 +841,7 @@ CLASS lcl_main IMPLEMENTATION.
 
     CALL FUNCTION 'FB_MESSAGES_DISPLAY_POPUP'
       EXPORTING
-*       it_smesg        =
-*       id_smesg_zeile  =
         it_return       = me->mt_messages
-*       id_send_if_one  =
       EXCEPTIONS
         no_messages     = 1
         popup_cancelled = 2
