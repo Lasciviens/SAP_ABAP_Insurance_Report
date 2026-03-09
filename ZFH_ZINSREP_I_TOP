@@ -5,3 +5,11 @@ TABLES: zinsusale, mara, zssb_subs.
 
 CLASS lcl_main DEFINITION DEFERRED.
 DATA go_main TYPE REF TO lcl_main.
+
+DATA: gv_template       TYPE zinsusale-zcomment,
+      gv_row_id         TYPE i,
+      gv_screen_comment TYPE zinsusale-zcomment.
+
+DATA: gs_stable TYPE lvc_s_stbl.
+gs_stable-row = abap_true.
+gs_stable-col = abap_true.
