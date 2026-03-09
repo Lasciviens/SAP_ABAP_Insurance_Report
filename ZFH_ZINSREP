@@ -1,12 +1,30 @@
 *&---------------------------------------------------------------------*
 *& Report ZFH_ZINSREP
 *& This report check insurance documents and report on error
+*& Upgraded version.
+*&
+*& Author: Furkan Hamdemir. FUHA00
+*& Date:   23.02.2026
+*&
+*--------------------------Change Logs---------------------------------*
+*&
+*& Date:
+*& Author:
+*& Description:
+*& Transport:
+*&
+*& Date:
+*& Author:
+*& Description:
+*& Transport:
+*&---------------------------------------------------------------------*
 REPORT zfh_zinsrep.
 
-INCLUDE zfh_zinsrep_i_top.
-INCLUDE zfh_zinsrep_i_ssc.
-INCLUDE zfh_zinsrep_i_cls.
-INCLUDE zfh_zinsrep_i_0100.
+INCLUDE ZSSB_INSREP_I_TOP.
+INCLUDE ZSSB_INSREP_I_SSC.
+INCLUDE ZSSB_INSREP_I_CLS.
+INCLUDE ZSSB_INSREP_I_0100.
+INCLUDE zssb_insrep_i_0300.
 
 INITIALIZATION.
   go_main = lcl_main=>get_instance( ).
