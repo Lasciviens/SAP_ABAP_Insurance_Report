@@ -1,0 +1,67 @@
+*----------------------------------------------------------------------*
+***INCLUDE ZSSB_INSREP_I_0300.
+*----------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Module  STATUS_0300  OUTPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE status_0300 OUTPUT.
+  TYPE-POOLS: vrm.
+  DATA lt_values TYPE vrm_values.
+
+  IF lt_values IS INITIAL.
+    lt_values = VALUE #( ( key = 'T0' text = '--- Add a pre-defined comment ---'  )
+                         ( key = 'T1' text = 'Handled'            )
+                         ( key = 'T2' text = 'Sent to VIP'        )
+                         ( key = 'T3' text = 'No local phone nr.' ) ).
+
+    CALL FUNCTION 'VRM_SET_VALUES'
+      EXPORTING
+        id     = 'GV_TEMPLATE'
+        values = lt_values.
+  ENDIF.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_0300  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE user_command_0300 INPUT.
+
+  DATA(lv_manual_prefix) = |{ sy-uname } { sy-datum DATE = USER }: |.
+  CASE sy-ucomm.
+
+    WHEN 'BTN_SIGN'.
+
+      IF gv_screen_comment IS INITIAL.
+        gv_screen_comment = lv_manual_prefix.
+      ELSE.
+        gv_screen_comment = |{ lv_manual_prefix } { gv_screen_comment }|.
+      ENDIF.
+
+    WHEN 'SC_TMPL'.
+      CHECK gv_template <> 'T0'.
+
+      DATA: lv_temp_text TYPE string.
+
+      CASE gv_template.
+        WHEN 'T1'. lv_temp_text = 'Handled.'.
+        WHEN 'T2'. lv_temp_text = 'Sent to VIP.'.
+        WHEN 'T3'. lv_temp_text = 'No local phone nr.'.
+      ENDCASE.
+
+      gv_screen_comment = lv_manual_prefix && lv_temp_text.
+
+      gv_template = 'T0'.
+
+    WHEN 'SC_SAVE'.
+      go_main->tb_save_comment( ).
+      LEAVE TO SCREEN 0.
+
+    WHEN 'SC_CANCEL' OR 'EXIT' OR 'CANC'.
+      LEAVE TO SCREEN 0.
+
+  ENDCASE.
+ENDMODULE.
