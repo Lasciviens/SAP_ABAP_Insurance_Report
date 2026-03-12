@@ -1,0 +1,129 @@
+*----------------------------------------------------------------------*
+***INCLUDE ZSSB_INSREP_I_0400.
+*----------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Module  STATUS_0400  OUTPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE status_0400 OUTPUT.
+
+  LOOP AT SCREEN.
+
+    " 1. Hide or Show the BP Number Box (BP1)
+    IF screen-group1 = 'BP1'.
+      IF gv_scr_bp IS INITIAL.
+        screen-active = 0. " If BP is empty, make it invisible
+      ELSE.
+        screen-active = 1.
+        screen-input  = 0. " If BP exists, show it but read-only
+      ENDIF.
+    ENDIF.
+
+    " 2. Manage the SE16N Button (SE1)
+    IF screen-group1 = 'SE1'.
+      IF gv_scr_mode = 'V' OR gv_refnr_exist = abap_true.
+        screen-active = 1. " Show if record exists
+      ELSE.
+        screen-active = 0. " No need for SE16N button for a brand new record, hide it
+      ENDIF.
+    ENDIF.
+
+    " 3. Read-Only (V) Mode vs Edit (E) Mode
+    IF gv_scr_mode = 'V'.
+      " If an identical record exists, lock everything
+      IF screen-name = 'BTN_SAVE'.
+        screen-active = 0. " Record already exists, hide the Save
+      ENDIF.
+      IF screen-group1 <> 'SE1' AND screen-name <> 'BTN_CANCEL'.
+        screen-input = 0. " Gray out all other fields
+      ENDIF.
+    ELSE.
+      " Even in Edit (E) mode, Refnr and Webshop cannot be changed; they are fixed
+      IF screen-name = 'GV_SCR_REFNR' OR screen-name = 'GV_SCR_WEBSHOP'.
+        screen-input = 0.
+      ENDIF.
+    ENDIF.
+
+    MODIFY SCREEN.
+  ENDLOOP.
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_0400  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE user_command_0400 INPUT.
+  CASE sy-ucomm.
+
+    WHEN 'SC_CANCEL' OR 'BACK' OR 'EXIT'.
+      LEAVE TO SCREEN 0.
+
+    WHEN 'SC_SE16N'.
+      DATA: lt_seltab TYPE TABLE OF se16n_seltab,
+            ls_seltab TYPE se16n_seltab.
+
+      " Define which Order Number to search for
+      ls_seltab-field  = 'REFNR'.
+      ls_seltab-sign   = 'I'.
+      ls_seltab-option = 'EQ'.
+      ls_seltab-low    = gv_scr_refnr.
+      APPEND ls_seltab TO lt_seltab.
+
+      " Call SE16N using the Standard SAP Function Module
+      CALL FUNCTION 'SE16N_INTERFACE'
+        EXPORTING
+          i_tab   = 'ZUPDT_BP_TOKEN'
+          i_edit  = space " Editing disabled
+        TABLES
+          it_selfields = lt_seltab.
+      " Remains on our popup screen after returning.
+
+    WHEN 'SC_SAVE'.
+      IF gv_scr_mode = 'E'.
+        IF gv_scr_token IS INITIAL.
+          MESSAGE 'Token / Card Number is mandatory!' TYPE 'S' DISPLAY LIKE 'E'.
+          EXIT.
+        ENDIF.
+
+        DATA: lv_bpguid_raw TYPE bu_partner_guid,
+              ls_zupdt      TYPE zupdt_bp_token.
+
+        " Convert GUID format back to SAP format (RAW16)
+        IF gv_scr_guid CA '-'.
+          lv_bpguid_raw = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
+*          lv_bpguid_raw = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( CONV #( gv_scr_guid ) ).
+        ELSE.
+          lv_bpguid_raw = gv_scr_guid.
+        ENDIF.
+
+        " Prepare the database record
+        ls_zupdt-partner_guid = lv_bpguid_raw.
+        ls_zupdt-token        = gv_scr_token.
+        ls_zupdt-refnr        = gv_scr_refnr.
+        ls_zupdt-butikk       = gv_scr_webshop.
+        ls_zupdt-created_date = sy-datum.
+        ls_zupdt-created_time = sy-uzeit.
+
+        " BP Status (Based on the previously determined gv_scr_bp variable)
+        IF gv_scr_bp IS NOT INITIAL.
+          ls_zupdt-partner = gv_scr_bp.
+          ls_zupdt-status  = zcl_updt_bp_token=>gc_update_status_update_req. " '02'
+        ELSE.
+          ls_zupdt-status  = zcl_updt_bp_token=>gc_update_status_bp_missing. " '01'
+        ENDIF.
+
+        "  Update table
+        INSERT zupdt_bp_token FROM ls_zupdt.
+        IF sy-subrc = 0.
+          MESSAGE 'Record successfully inserted!' TYPE 'S'.
+          " --- AUTO-COMMENT CODE WILL BE ADDED HERE LATER --- "
+          LEAVE TO SCREEN 0.
+        ELSE.
+          MESSAGE 'Failed to insert record!' TYPE 'E'.
+        ENDIF.
+
+      ENDIF.
+
+  ENDCASE.
+ENDMODULE.
