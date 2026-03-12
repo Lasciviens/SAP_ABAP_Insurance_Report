@@ -1,5 +1,5 @@
 *&---------------------------------------------------------------------*
-*&  Include           ZFH_ZINSREP_I_CLS
+*&  Include           ZSSB_S_ZINSREP_I_CLS
 *&---------------------------------------------------------------------*
 
 CLASS lcl_main DEFINITION.
@@ -21,19 +21,20 @@ CLASS lcl_main DEFINITION.
       tb_edit_comment  IMPORTING iv_index   TYPE lvc_s_row-index,
       tb_save_comment,
       tb_details       IMPORTING iv_table TYPE tabname,
+      tb_update_token,
       add_auto_comment IMPORTING iv_index TYPE i
-                                 iv_text  TYPE string..
+                                 iv_text  TYPE string.
 
   PRIVATE SECTION.
     CLASS-DATA:
       mo_instance TYPE REF TO lcl_main.
 
-    CONSTANTS: mc_alv_structure TYPE dd02l-tabname VALUE 'ZFH_ZINSREP',
+    CONSTANTS: mc_alv_structure TYPE dd02l-tabname VALUE 'ZSSB_S_ZINSREP',
                mc_alv_container TYPE dd02l-tabname VALUE 'CON_ALV_MAIN'.
 
     DATA:
-      mt_alv       TYPE TABLE OF zfh_zinsrep,
-      ms_alv       TYPE zfh_zinsrep,
+      mt_alv       TYPE TABLE OF zssb_s_zinsrep,
+      ms_alv       TYPE zssb_s_zinsrep,
       mo_container TYPE REF TO cl_gui_custom_container,
       mo_alv_grid  TYPE REF TO cl_gui_alv_grid.
 
@@ -150,8 +151,7 @@ CLASS lcl_main IMPLEMENTATION.
     CHECK lt_zinsusale IS NOT INITIAL.
 
 *----convert ZINSUSALE-INSUID to Mara type..---*
-    TYPES: BEGIN OF ty_matnr_key,
-             matnr TYPE matnr,
+    TYPES: BEGIN OF ty_matnr_key, matnr TYPE matnr,
            END OF ty_matnr_key.
 
     DATA: lt_matnr_keys TYPE TABLE OF ty_matnr_key.
@@ -169,50 +169,179 @@ CLASS lcl_main IMPLEMENTATION.
         WHERE matnr EQ @lt_matnr_keys-matnr
         INTO TABLE @DATA(lt_mara).
     ENDIF.
-*---------------------End Of Mara section-------------------------------------*
 
 *---Find price for PO45 & PO43 EKKO & EKPO----*
-    SELECT ekpo~ebeln, ekpo~ebelp, ekpo~netpr, ekko~waers
-      FROM ekpo
-      INNER JOIN ekko ON ekko~ebeln = ekpo~ebeln
-      FOR ALL ENTRIES IN @lt_zinsusale
-      WHERE ( ekpo~ebeln = @lt_zinsusale-zz_ebeln     AND ekpo~ebelp = @lt_zinsusale-zz_ebelp )
-         OR ( ekpo~ebeln = @lt_zinsusale-zz_ebeln_lif AND ekpo~ebelp = @lt_zinsusale-zz_ebelp_lif )
-      INTO TABLE @DATA(lt_purchase_docs).
+** PO43 (zz_ebeln / zz_ebelp)
+** PO45 (zz_ebeln_lif / zz_ebelp_lif)
+*    SELECT ekpo~ebeln, ekpo~ebelp, ekpo~netpr, ekko~waers
+*      FROM ekpo
+*      INNER JOIN ekko ON ekko~ebeln = ekpo~ebeln
+*      FOR ALL ENTRIES IN @lt_zinsusale
+*      WHERE ( ekpo~ebeln = @lt_zinsusale-zz_ebeln     AND ekpo~ebelp = @lt_zinsusale-zz_ebelp )
+*         OR ( ekpo~ebeln = @lt_zinsusale-zz_ebeln_lif AND ekpo~ebelp = @lt_zinsusale-zz_ebelp_lif )
+*      INTO TABLE @DATA(lt_purchase_docs).
+    TYPES: BEGIN OF ty_po_key,
+             ebeln TYPE ebeln,
+             ebelp TYPE ebelp,
+           END OF ty_po_key.
 
-*---Find SO ZFOR Price (VBAK / VBAP)----*
-    SELECT vbap~vbeln, vbap~posnr, vbap~netpr, vbak~waerk, vbap~faksp
-      FROM vbap
-      INNER JOIN vbak ON vbak~vbeln = vbap~vbeln
-      FOR ALL ENTRIES IN @lt_zinsusale
-      WHERE vbap~vbeln = @lt_zinsusale-zz_vbeln
-        AND vbap~posnr = @lt_zinsusale-zz_posnr
-      INTO TABLE @DATA(lt_sales_docs).
+    DATA: lt_po_keys TYPE TABLE OF ty_po_key.
+
+    LOOP AT lt_zinsusale ASSIGNING FIELD-SYMBOL(<ls_z_po>)
+                         WHERE zz_ebeln     IS NOT INITIAL
+                            OR zz_ebeln_lif IS NOT INITIAL.
+
+      IF <ls_z_po>-zz_ebeln IS NOT INITIAL.
+        APPEND VALUE #( ebeln = <ls_z_po>-zz_ebeln ebelp = <ls_z_po>-zz_ebelp ) TO lt_po_keys.
+      ENDIF.
+      IF <ls_z_po>-zz_ebeln_lif IS NOT INITIAL.
+        APPEND VALUE #( ebeln = <ls_z_po>-zz_ebeln_lif ebelp = <ls_z_po>-zz_ebelp_lif ) TO lt_po_keys.
+      ENDIF.
+    ENDLOOP.
+
+    SORT lt_po_keys BY ebeln ebelp.
+    DELETE ADJACENT DUPLICATES FROM lt_po_keys COMPARING ebeln ebelp.
+
+    TYPES: BEGIN OF ty_po_data,
+             ebeln TYPE ebeln,
+             ebelp TYPE ebelp,
+             netpr TYPE netpr,
+             waers TYPE waers,
+           END OF ty_po_data.
+
+    DATA: lt_purchase_docs TYPE HASHED TABLE OF ty_po_data WITH UNIQUE KEY ebeln ebelp.
+
+    IF lt_po_keys IS NOT INITIAL.
+      SELECT ekpo~ebeln, ekpo~ebelp, ekpo~netpr, ekko~waers
+        FROM ekpo
+        INNER JOIN ekko ON ekko~ebeln = ekpo~ebeln
+        FOR ALL ENTRIES IN @lt_po_keys
+        WHERE ekpo~ebeln = @lt_po_keys-ebeln
+          AND ekpo~ebelp = @lt_po_keys-ebelp
+        INTO TABLE @lt_purchase_docs.
+    ENDIF.
+
+**---Find SO ZFOR Price (VBAK / VBAP)----*
+
+*    SELECT vbap~vbeln, vbap~posnr, vbap~netpr, vbak~waerk, vbap~faksp
+*      FROM vbap
+*      INNER JOIN vbak ON vbak~vbeln = vbap~vbeln
+*      FOR ALL ENTRIES IN @lt_zinsusale
+*      WHERE vbap~vbeln = @lt_zinsusale-zz_vbeln
+*        AND vbap~posnr = @lt_zinsusale-zz_posnr
+*      INTO TABLE @DATA(lt_sales_docs).
+
+    TYPES: BEGIN OF ty_so_key,
+             vbeln TYPE vbeln_va,
+             posnr TYPE posnr_va,
+           END OF ty_so_key.
+
+    TYPES: ty_so_key_tab TYPE STANDARD TABLE OF ty_so_key WITH DEFAULT KEY.
+
+    DATA(lt_so_keys) = VALUE ty_so_key_tab(
+                         FOR <ls_z_so> IN lt_zinsusale WHERE ( zz_vbeln IS NOT INITIAL )
+                         ( vbeln = <ls_z_so>-zz_vbeln posnr = <ls_z_so>-zz_posnr ) ).
+
+    SORT lt_so_keys BY vbeln posnr.
+    DELETE ADJACENT DUPLICATES FROM lt_so_keys COMPARING vbeln posnr.
+
+    TYPES: BEGIN OF ty_so_data,
+             vbeln TYPE vbeln_va,
+             posnr TYPE posnr_va,
+             netpr TYPE netpr,
+             waerk TYPE waerk,
+             faksp TYPE faksp,
+           END OF ty_so_data.
+
+    DATA: lt_sales_docs TYPE HASHED TABLE OF ty_so_data WITH UNIQUE KEY vbeln posnr.
+
+    IF lt_so_keys IS NOT INITIAL.
+      SELECT vbap~vbeln, vbap~posnr, vbap~netpr, vbak~waerk, vbap~faksp
+        FROM vbap
+        INNER JOIN vbak ON vbak~vbeln = vbap~vbeln
+        FOR ALL ENTRIES IN @lt_so_keys
+        WHERE vbap~vbeln = @lt_so_keys-vbeln
+          AND vbap~posnr = @lt_so_keys-posnr
+        INTO TABLE @lt_sales_docs.
+    ENDIF.
 
 *---Find Purchase Req. (VBEP)----*
-    SELECT vbeln, posnr, banfn, bnfpo
-      FROM vbep
-      FOR ALL ENTRIES IN @lt_zinsusale
-      WHERE vbeln = @lt_zinsusale-zz_vbeln
-        AND posnr = @lt_zinsusale-zz_posnr
-      INTO TABLE @DATA(lt_vbep).
+*    SELECT vbeln, posnr, banfn, bnfpo
+*      FROM vbep
+*      FOR ALL ENTRIES IN @lt_zinsusale
+*      WHERE vbeln = @lt_zinsusale-zz_vbeln
+*        AND posnr = @lt_zinsusale-zz_posnr
+*      INTO TABLE @DATA(lt_vbep).
+
+    TYPES: BEGIN OF ty_vbep_data,
+             vbeln TYPE vbeln_va,
+             posnr TYPE posnr_va,
+             banfn TYPE banfn,
+             bnfpo TYPE bnfpo,
+           END OF ty_vbep_data.
+
+    " VBEP Hashed Table
+    DATA: lt_vbep TYPE HASHED TABLE OF ty_vbep_data WITH UNIQUE KEY vbeln posnr.
+
+    IF lt_so_keys IS NOT INITIAL.
+      SELECT vbeln, posnr, banfn, bnfpo
+        FROM vbep
+        FOR ALL ENTRIES IN @lt_so_keys
+        WHERE vbeln = @lt_so_keys-vbeln
+          AND posnr = @lt_so_keys-posnr
+        INTO TABLE @lt_vbep.
+    ENDIF.
 
 *---Source of Supply Check----*
-    IF lt_vbep IS NOT INITIAL.
+*    IF lt_vbep IS NOT INITIAL.
+*      SELECT banfn, bnfpo, infnr
+*        FROM eban
+*        FOR ALL ENTRIES IN @lt_vbep
+*        WHERE banfn = @lt_vbep-banfn
+*          AND bnfpo = @lt_vbep-bnfpo
+*        INTO TABLE @DATA(lt_eban).
+*    ENDIF.
+
+    " Before reading EBAN, get rid of empty PR
+    TYPES: BEGIN OF ty_pr_key,
+             banfn TYPE banfn,
+             bnfpo TYPE bnfpo,
+           END OF ty_pr_key.
+    TYPES: ty_pr_key_tab TYPE STANDARD TABLE OF ty_pr_key WITH DEFAULT KEY.
+
+    DATA(lt_pr_keys) = VALUE ty_pr_key_tab(
+                         FOR <ls_v> IN lt_vbep WHERE ( banfn IS NOT INITIAL )
+                         ( banfn = <ls_v>-banfn bnfpo = <ls_v>-bnfpo ) ).
+
+    SORT lt_pr_keys BY banfn bnfpo.
+    DELETE ADJACENT DUPLICATES FROM lt_pr_keys COMPARING banfn bnfpo.
+
+    TYPES: BEGIN OF ty_eban_data,
+             banfn TYPE banfn,
+             bnfpo TYPE bnfpo,
+             infnr TYPE infnr,
+           END OF ty_eban_data.
+
+    " EBAN Hashed Table
+    DATA: lt_eban TYPE HASHED TABLE OF ty_eban_data WITH UNIQUE KEY banfn bnfpo.
+
+    IF lt_pr_keys IS NOT INITIAL.
       SELECT banfn, bnfpo, infnr
         FROM eban
-        FOR ALL ENTRIES IN @lt_vbep
-        WHERE banfn = @lt_vbep-banfn
-          AND bnfpo = @lt_vbep-bnfpo
-        INTO TABLE @DATA(lt_eban).
+        FOR ALL ENTRIES IN @lt_pr_keys
+        WHERE banfn = @lt_pr_keys-banfn
+          AND bnfpo = @lt_pr_keys-bnfpo
+        INTO TABLE @lt_eban.
     ENDIF.
+
 
     DATA: lv_counter TYPE i.
 
+*---------------------------MAIN LOOP -----------------------------------------*
     LOOP AT lt_zinsusale ASSIGNING FIELD-SYMBOL(<lfs_zinsusale>).
 
 * Initialize new row and copy base data
-      DATA(ls_report) = VALUE zfh_zinsrep( ).
+      DATA(ls_report) = VALUE zssb_s_zinsrep( ).
       ls_report = CORRESPONDING #( <lfs_zinsusale> ).
 
 * Determine Country, Sales Org, and Price Limit based on Store prefix
@@ -239,49 +368,65 @@ CLASS lcl_main IMPLEMENTATION.
 
 * -----------------------------------------------------------------
 * Elguide No
-      ASSIGN lt_matnr_keys[ matnr = <lfs_zinsusale>-insuid ] TO FIELD-SYMBOL(<ls_matnr_key>).
-      IF sy-subrc = 0.
-        ASSIGN lt_mara[ matnr = <ls_matnr_key>-matnr ] TO FIELD-SYMBOL(<ls_mara>).
+
+      IF <lfs_zinsusale>-insuid IS NOT INITIAL.
+        READ TABLE lt_mara ASSIGNING FIELD-SYMBOL(<ls_mara>)
+          WITH KEY matnr = <lfs_zinsusale>-insuid.
         IF sy-subrc = 0.
           ls_report-zzmatnr = <ls_mara>-zzmatnr.
         ENDIF.
       ENDIF.
 
 * PO43
-      ASSIGN lt_purchase_docs[ ebeln = <lfs_zinsusale>-zz_ebeln
-                               ebelp = <lfs_zinsusale>-zz_ebelp ] TO FIELD-SYMBOL(<ls_po43>).
-      IF sy-subrc = 0.
-        ls_report-netpr = <ls_po43>-netpr.
-        ls_report-waers = <ls_po43>-waers.
+      IF <lfs_zinsusale>-zz_ebeln IS NOT INITIAL.
+        READ TABLE lt_purchase_docs ASSIGNING FIELD-SYMBOL(<ls_po43>)
+          WITH TABLE KEY ebeln = <lfs_zinsusale>-zz_ebeln
+                         ebelp = <lfs_zinsusale>-zz_ebelp.
+        IF sy-subrc = 0.
+          ls_report-netpr = <ls_po43>-netpr.
+          ls_report-waers = <ls_po43>-waers.
+        ENDIF.
       ENDIF.
 
 * SO ZFOR
-      ASSIGN lt_sales_docs[ vbeln = <lfs_zinsusale>-zz_vbeln
-                            posnr = <lfs_zinsusale>-zz_posnr ] TO FIELD-SYMBOL(<ls_so>).
-      IF sy-subrc = 0.
-        ls_report-netprso = <ls_so>-netpr.
-        ls_report-waerk   = <ls_so>-waerk.
-        ls_report-faksp   = <ls_so>-faksp.
+      IF <lfs_zinsusale>-zz_vbeln IS NOT INITIAL.
+        READ TABLE lt_sales_docs ASSIGNING FIELD-SYMBOL(<ls_so>) WITH TABLE KEY vbeln = <lfs_zinsusale>-zz_vbeln
+                                                                                posnr = <lfs_zinsusale>-zz_posnr.
+
+        IF sy-subrc = 0.
+          ls_report-netprso = <ls_so>-netpr.
+          ls_report-waerk   = <ls_so>-waerk.
+          ls_report-faksp   = <ls_so>-faksp.
+        ENDIF.
       ENDIF.
 
 * PO45
-      ASSIGN lt_purchase_docs[ ebeln = <lfs_zinsusale>-zz_ebeln_lif
-                               ebelp = <lfs_zinsusale>-zz_ebelp_lif ] TO FIELD-SYMBOL(<ls_po45>).
-      IF sy-subrc = 0.
-        ls_report-netprpo45 = <ls_po45>-netpr.
+      IF <lfs_zinsusale>-zz_ebeln_lif IS NOT INITIAL.
+        READ TABLE lt_purchase_docs ASSIGNING FIELD-SYMBOL(<ls_po45>)
+          WITH TABLE KEY ebeln = <lfs_zinsusale>-zz_ebeln_lif
+                         ebelp = <lfs_zinsusale>-zz_ebelp_lif.
+        IF sy-subrc = 0.
+          ls_report-netprpo45 = <ls_po45>-netpr.
+        ENDIF.
       ENDIF.
 
 * PR VBEP & EBAN (Source of Supply)
-      ASSIGN lt_vbep[ vbeln = <lfs_zinsusale>-zz_vbeln
-                      posnr = <lfs_zinsusale>-zz_posnr ] TO FIELD-SYMBOL(<ls_vbep>).
-      IF sy-subrc = 0.
-        ls_report-banfn = <ls_vbep>-banfn.
-        ls_report-bnfpo = <ls_vbep>-bnfpo.
+      IF <lfs_zinsusale>-zz_vbeln IS NOT INITIAL.
+        READ TABLE lt_vbep ASSIGNING FIELD-SYMBOL(<ls_vbep>)
+          WITH TABLE KEY vbeln = <lfs_zinsusale>-zz_vbeln
+                         posnr = <lfs_zinsusale>-zz_posnr.
+        IF sy-subrc = 0.
+          ls_report-banfn = <ls_vbep>-banfn.
+          ls_report-bnfpo = <ls_vbep>-bnfpo.
 
-        ASSIGN lt_eban[ banfn = ls_report-banfn
-                        bnfpo = ls_report-bnfpo ] TO FIELD-SYMBOL(<ls_eban>).
-        IF sy-subrc = 0 AND <ls_eban>-infnr IS INITIAL.
-          ls_report-znosource45 = abap_true.
+          IF <ls_vbep>-banfn IS NOT INITIAL.
+            READ TABLE lt_eban ASSIGNING FIELD-SYMBOL(<ls_eban>)
+              WITH TABLE KEY banfn = ls_report-banfn
+                             bnfpo = ls_report-bnfpo.
+            IF sy-subrc = 0 AND <ls_eban>-infnr IS INITIAL.
+              ls_report-znosource45 = abap_true.
+            ENDIF.
+          ENDIF.
         ENDIF.
       ENDIF.
 
@@ -292,15 +437,14 @@ CLASS lcl_main IMPLEMENTATION.
 
       CLEAR: ls_color, lt_color, f_skip.
 
-      IF ( ls_report-zz_ebeln     IS INITIAL OR
-           abs( ls_report-netpr ) <= lv_limit OR
-           ls_report-zz_vbeln     IS INITIAL OR
-           abs( ls_report-netprso ) <= lv_limit OR
-           ls_report-zz_ebeln_lif IS INITIAL OR
-           abs( ls_report-netprpo45 ) <= lv_limit OR
-           ls_report-zpolstatus   = 'E' OR
-           ls_report-zpolstatus   = 'W' )
-         AND ls_report-zpolstatus NE 'N'.
+      IF ( ls_report-zz_ebeln     IS INITIAL OR abs( ls_report-netpr )     <= lv_limit
+                                             OR abs( ls_report-netprso )   <= lv_limit
+                                             OR abs( ls_report-netprpo45 ) <= lv_limit
+                                             OR ls_report-zz_vbeln     IS INITIAL
+                                             OR ls_report-zz_ebeln_lif IS INITIAL
+                                             OR ls_report-zpolstatus  = 'E'
+                                             OR ls_report-zpolstatus  = 'W' )
+                                            AND ls_report-zpolstatus NE 'N'.
 
 * SSB Status = 7
         IF NOT ( ls_report-zzsubscr = abap_true AND ls_report-zzssbstatus = '7' ).
@@ -463,25 +607,6 @@ CLASS lcl_main IMPLEMENTATION.
     ).
   ENDMETHOD.
 
-  METHOD handle_user_command.
-    CASE e_ucomm.
-      WHEN 'BUT_MAIL'.
-        me->tb_send_mail( ).
-
-      WHEN 'BUT_RESET'.
-        me->tb_reset_flag( ).
-
-      WHEN 'DET_ZINS'.
-        me->tb_details( iv_table = 'ZINSUSALE' ).
-
-      WHEN 'DET_ZUPDT'.
-        me->tb_details( iv_table = 'ZUPDT_BP_TOKEN' ).
-
-      WHEN 'BUT_IMEI'.
-        me->tb_find_imei( ).
-    ENDCASE.
-  ENDMETHOD.
-
   METHOD handle_toolbar.
     DATA: ls_toolbar TYPE stb_button.
     " Icon finds in se38 - SHOWICON
@@ -531,6 +656,36 @@ CLASS lcl_main IMPLEMENTATION.
     APPEND ls_toolbar TO e_object->mt_toolbar.
     CLEAR ls_toolbar.
 
+    ls_toolbar-function  = 'BUT_UPDT'.
+    ls_toolbar-icon      = icon_change_number. "Change
+    ls_toolbar-quickinfo = 'Update GUID/Token'.
+    ls_toolbar-text      = 'Update'.
+    ls_toolbar-butn_type = 0.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+
+  ENDMETHOD.
+
+  METHOD handle_user_command.
+    CASE e_ucomm.
+      WHEN 'BUT_MAIL'.
+        me->tb_send_mail( ).
+
+      WHEN 'BUT_RESET'.
+        me->tb_reset_flag( ).
+
+      WHEN 'DET_ZINS'.
+        me->tb_details( iv_table = 'ZINSUSALE' ).
+
+      WHEN 'DET_ZUPDT'.
+        me->tb_details( iv_table = 'ZUPDT_BP_TOKEN' ).
+
+      WHEN 'BUT_IMEI'.
+        me->tb_find_imei( ).
+
+      WHEN 'BUT_UPDT'.
+        me->tb_update_token( ).
+    ENDCASE.
   ENDMETHOD.
 
   METHOD handle_hotspot_click.
@@ -626,7 +781,6 @@ CLASS lcl_main IMPLEMENTATION.
         WHERE refnr EQ @<lfs_alv>-refnr.
 
       IF sy-subrc EQ 0.
-        COMMIT WORK.
         lv_success_count = lv_success_count + 1.
         me->add_message(
           EXPORTING
@@ -640,8 +794,12 @@ CLASS lcl_main IMPLEMENTATION.
       ENDIF.
 
     ENDLOOP.
+
+    IF lv_success_count > 0.
+      COMMIT WORK AND WAIT.
+    ENDIF.
     me->display_all_messages( ).
-*     mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+    mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
   ENDMETHOD.
 
   METHOD tb_find_imei.
@@ -795,6 +953,76 @@ CLASS lcl_main IMPLEMENTATION.
     IF sy-subrc NE 0.
       MESSAGE | Could not bring details in { iv_table } | TYPE 'S' DISPLAY LIKE 'E'.
     ENDIF.
+  ENDMETHOD.
+
+  METHOD tb_update_token.
+    DATA(lt_rows) = me->get_selected_rows( ).
+
+    IF lines( lt_rows ) NE 1.
+      MESSAGE 'Please select exactly ONE row for Token Update!' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+
+    READ TABLE lt_rows INTO DATA(ls_row) INDEX 1.
+    READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX ls_row-index.
+    CHECK sy-subrc = 0.
+
+    CLEAR: gv_scr_guid, gv_scr_token, gv_scr_refnr, gv_scr_webshop, gv_scr_bp, gv_scr_msg, gv_scr_mode, gv_refnr_exist.
+
+    gv_scr_token = <lfs_alv>-zztoken.
+    gv_scr_refnr = <lfs_alv>-refnr.
+
+    " GUID Format (RAW to String)
+    IF <lfs_alv>-zzbpref IS NOT INITIAL.
+      gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( CONV #( <lfs_alv>-zzbpref ) ).
+    ENDIF.
+
+    " Webshop ID  (Dinamik)
+    CASE <lfs_alv>-butikk(1).
+      WHEN '1'. gv_scr_webshop = '1901'.
+      WHEN '3'. gv_scr_webshop = '3821'.
+      WHEN '4'. gv_scr_webshop = '4921'.
+      WHEN '7'. gv_scr_webshop = '7921'.
+    ENDCASE.
+
+    " BP Check
+    IF <lfs_alv>-zzbpref IS NOT INITIAL.
+      SELECT SINGLE partner INTO @gv_scr_bp
+        FROM but000
+       WHERE partner_guid = @<lfs_alv>-zzbpref.
+    ENDIF.
+
+    DATA: lv_bpguid_raw TYPE bu_partner_guid.
+    lv_bpguid_raw = <lfs_alv>-zzbpref.
+
+    " C1: Full Key (GUID + Token + Refnr)
+    SELECT SINGLE partner_guid INTO @DATA(lv_check_full)
+      FROM zupdt_bp_token
+     WHERE partner_guid = @lv_bpguid_raw
+       AND token        = @gv_scr_token
+       AND refnr        = @gv_scr_refnr.
+
+    IF sy-subrc = 0.
+      gv_scr_mode = 'V'.
+      gv_scr_msg  = 'This exact record already exists. (Read-Only)'.
+    ELSE.
+      " C2: Full Key doesn't exist, check with REFNR just in case
+      SELECT SINGLE partner_guid INTO @DATA(lv_check_refnr)
+        FROM zupdt_bp_token
+       WHERE refnr = @gv_scr_refnr.
+
+      IF sy-subrc = 0.
+        gv_scr_mode = 'E'. " Still editable
+        gv_refnr_exist = abap_true. " To Display in Se16n
+        gv_scr_msg  = 'WARNING: A different token update already exists for this Document!'.
+      ELSE.
+        gv_scr_mode = 'E'.
+        gv_scr_msg  = 'Ready to register new token update.'.
+      ENDIF.
+    ENDIF.
+
+    CALL SCREEN 0400 STARTING AT 10 5
+                     ENDING   AT 105 15.
   ENDMETHOD.
 
   METHOD add_auto_comment.
