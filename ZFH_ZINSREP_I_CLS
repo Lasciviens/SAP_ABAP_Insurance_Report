@@ -22,7 +22,7 @@ CLASS lcl_main DEFINITION.
       tb_save_comment,
       tb_details       IMPORTING iv_table TYPE tabname,
       tb_update_token,
-      add_auto_comment IMPORTING iv_index TYPE i
+      add_auto_comment IMPORTING iv_index TYPE lvc_s_row-index
                                  iv_text  TYPE string.
 
   PRIVATE SECTION.
@@ -969,15 +969,9 @@ CLASS lcl_main IMPLEMENTATION.
 
     CLEAR: gv_scr_guid, gv_scr_token, gv_scr_refnr, gv_scr_webshop, gv_scr_bp, gv_scr_msg, gv_scr_mode, gv_refnr_exist.
 
-    gv_scr_token = <lfs_alv>-zztoken.
     gv_scr_refnr = <lfs_alv>-refnr.
+    gv_scr_token = <lfs_alv>-zztoken.
 
-    " GUID Format (RAW to String)
-    IF <lfs_alv>-zzbpref IS NOT INITIAL.
-      gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( CONV #( <lfs_alv>-zzbpref ) ).
-    ENDIF.
-
-    " Webshop ID  (Dinamik)
     CASE <lfs_alv>-butikk(1).
       WHEN '1'. gv_scr_webshop = '1901'.
       WHEN '3'. gv_scr_webshop = '3821'.
@@ -985,44 +979,135 @@ CLASS lcl_main IMPLEMENTATION.
       WHEN '7'. gv_scr_webshop = '7921'.
     ENDCASE.
 
-    " BP Check
-    IF <lfs_alv>-zzbpref IS NOT INITIAL.
-      SELECT SINGLE partner INTO @gv_scr_bp
-        FROM but000
-       WHERE partner_guid = @<lfs_alv>-zzbpref.
-    ENDIF.
+    DATA: lv_alv_guid_raw TYPE bu_partner_guid.
+    lv_alv_guid_raw = <lfs_alv>-zzbpref.
 
-    DATA: lv_bpguid_raw TYPE bu_partner_guid.
-    lv_bpguid_raw = <lfs_alv>-zzbpref.
-
-    " C1: Full Key (GUID + Token + Refnr)
-    SELECT SINGLE partner_guid INTO @DATA(lv_check_full)
+    SELECT SINGLE partner_guid INTO @DATA(lv_check_full) "Full key check
       FROM zupdt_bp_token
-     WHERE partner_guid = @lv_bpguid_raw
+     WHERE partner_guid = @lv_alv_guid_raw
        AND token        = @gv_scr_token
        AND refnr        = @gv_scr_refnr.
 
-    IF sy-subrc = 0.
-      gv_scr_mode = 'V'.
-      gv_scr_msg  = 'This exact record already exists. (Read-Only)'.
-    ELSE.
-      " C2: Full Key doesn't exist, check with REFNR just in case
-      SELECT SINGLE partner_guid INTO @DATA(lv_check_refnr)
-        FROM zupdt_bp_token
-       WHERE refnr = @gv_scr_refnr.
+    IF sy-subrc = 0. " Exact existing record -> Lock
+      gv_scr_mode    = 'V'.
+      gv_refnr_exist = abap_true.
+      gv_scr_msg     = 'This exact record already exists. (Read-Only)'.
 
-      IF sy-subrc = 0.
-        gv_scr_mode = 'E'. " Still editable
-        gv_refnr_exist = abap_true. " To Display in Se16n
-        gv_scr_msg  = 'WARNING: A different token update already exists for this Document!'.
+      IF <lfs_alv>-zzbpref IS NOT INITIAL.
+        gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( CONV #( <lfs_alv>-zzbpref ) ).
+        gv_scr_guid_ex = <lfs_alv>-zzbpref.
+      ENDIF.
+
+    ELSE.
+
+      SELECT * FROM zupdt_bp_token
+            WHERE refnr = @gv_scr_refnr
+            ORDER BY created_date DESCENDING, created_time DESCENDING
+            INTO @DATA(ls_existing)
+            UP TO 1 ROWS.
+      ENDSELECT.
+
+      IF sy-subrc = 0.  " Existing rec. -> Warning pop-up
+        gv_refnr_exist = abap_true.
+
+        DATA: lv_answer TYPE c.
+        CALL FUNCTION 'POPUP_TO_CONFIRM'
+          EXPORTING
+            titlebar              = 'Warning: Record Exists!'
+            text_question         = 'A different token update already exists for this document. Want to add a NEW one?'
+            text_button_1         = 'Yes, Add New'
+            text_button_2         = 'No, View Existing'
+            display_cancel_button = abap_true
+          IMPORTING
+            answer                = lv_answer.
+
+        IF lv_answer = 'A'. " Cancel
+          RETURN.
+        ENDIF.
+
+        IF lv_answer = '1'. " Yes, Add New ->  editable
+          gv_scr_mode = 'E'.
+          gv_scr_msg  = 'Adding a new record for the same Document.'.
+          IF <lfs_alv>-zzbpref IS NOT INITIAL.
+            gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( CONV #( <lfs_alv>-zzbpref ) ).
+            gv_scr_guid_ex = <lfs_alv>-zzbpref.
+          ENDIF.
+        ELSE.               " No, View Existing ->  Read-Only
+          gv_scr_mode = 'V'.
+          gv_scr_msg  = 'Showing existing record from Database. (Read-Only)'.
+          IF ls_existing-partner_guid IS NOT INITIAL.
+            gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( ls_existing-partner_guid ).
+            gv_scr_guid_ex = <lfs_alv>-zzbpref.
+          ENDIF.
+          gv_scr_token = ls_existing-token.
+          gv_scr_bp    = ls_existing-partner.
+        ENDIF.
+
       ELSE.
+        " No Rec. -> New Rec.
         gv_scr_mode = 'E'.
         gv_scr_msg  = 'Ready to register new token update.'.
+        IF <lfs_alv>-zzbpref IS NOT INITIAL.
+          gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( CONV #( <lfs_alv>-zzbpref ) ).
+          gv_scr_guid_ex = <lfs_alv>-zzbpref.
+        ENDIF.
       ENDIF.
     ENDIF.
 
     CALL SCREEN 0400 STARTING AT 10 5
                      ENDING   AT 105 15.
+
+    IF sy-ucomm = 'SC_SE16N'.
+      CLEAR sy-ucomm.
+      me->tb_details( iv_table = 'ZUPDT_BP_TOKEN' ).
+      RETURN.
+    ENDIF.
+
+    " Auto-Comment
+    IF gv_save_success = abap_true.
+      CLEAR gv_save_success.
+
+      DATA: lv_new_comment TYPE string,
+            lv_db_update   TYPE abap_bool.
+
+      lv_new_comment = 'Token Update Req.'.
+
+      " 1. GUID Kontrolü: Ekranda girilen GUID, ALV'dekinden farklıysa/yeniysa
+      IF gv_scr_guid IS NOT INITIAL.
+        DATA(lv_raw_guid) = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
+        IF <lfs_alv>-zzbpref <> lv_raw_guid.
+          lv_new_comment    = lv_new_comment && ' (GUID Added / Changed)'.
+          <lfs_alv>-zzbpref = lv_raw_guid.
+          lv_db_update      = abap_true.
+        ENDIF.
+      ENDIF.
+
+      " 2. Token Kontrolü: Ekranda girilen Token, ALV'dekinden farklıysa/yeniysa
+      IF gv_scr_token IS NOT INITIAL AND <lfs_alv>-zztoken <> gv_scr_token.
+        lv_new_comment    = lv_new_comment && ' (Token eklendi/gnclendi)'.
+        <lfs_alv>-zztoken = gv_scr_token.
+        lv_db_update      = abap_true.
+      ENDIF.
+
+      " 3. Yorumu ZINSUSALE tablosuna ve ALV hücresine ekle (Senin yazdığın o harika metot)
+      me->add_auto_comment( iv_index = ls_row-index iv_text = lv_new_comment ).
+
+      " 4. Eğer GUID veya Token değiştiyse ZINSUSALE tablosunu da direkt güncelle!
+      IF lv_db_update = abap_true.
+        UPDATE zinsusale
+           SET zzbpref = @<lfs_alv>-zzbpref,
+               zztoken = @<lfs_alv>-zztoken
+         WHERE polisenr = @<lfs_alv>-polisenr.
+
+        IF sy-subrc = 0.
+          COMMIT WORK AND WAIT.
+        ENDIF.
+      ENDIF.
+
+      " 5. ALV ekranını anında tazele ki kullanıcı girdiği verileri ve yorumu hemen görsün!
+      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+
+    ENDIF.
   ENDMETHOD.
 
   METHOD add_auto_comment.
