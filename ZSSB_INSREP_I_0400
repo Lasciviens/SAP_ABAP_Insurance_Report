@@ -7,7 +7,20 @@
 *       text
 *----------------------------------------------------------------------*
 MODULE status_0400 OUTPUT.
-
+  IF gv_scr_guid IS NOT INITIAL.
+    IF gv_scr_guid CA '-'.
+      " TRY-CATCH koyuyoruz ki kullanıcı eksik/hatalı GUID yazıp Enter'a basarsa sistem DUMP yemesin!
+      TRY.
+          gv_scr_guid_ex = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
+        CATCH cx_root.
+          CLEAR gv_scr_guid_ex. " Hatalı formattaysa kutuyu temizle
+      ENDTRY.
+    ELSE.
+      gv_scr_guid_ex = gv_scr_guid.
+    ENDIF.
+  ELSE.
+    CLEAR gv_scr_guid_ex.
+  ENDIF.
   LOOP AT SCREEN.
 
     " 1. Hide or Show the BP Number Box (BP1)
@@ -25,7 +38,7 @@ MODULE status_0400 OUTPUT.
       IF gv_scr_mode = 'V' OR gv_refnr_exist = abap_true.
         screen-active = 1. " Show if record exists
       ELSE.
-        screen-active = 0. " No need for SE16N button for a brand new record, hide it
+        screen-active = 0. " No need for SE16N button for a new record, hide it
       ENDIF.
     ENDIF.
 
@@ -60,44 +73,50 @@ MODULE user_command_0400 INPUT.
       LEAVE TO SCREEN 0.
 
     WHEN 'SC_SE16N'.
-      DATA: lt_seltab TYPE TABLE OF se16n_seltab,
-            ls_seltab TYPE se16n_seltab.
+      LEAVE TO SCREEN 0.
+*      Calling SE16N from a pop-up screen fails. Close the screen and call tb_update_token method.
 
-      " Define which Order Number to search for
-      ls_seltab-field  = 'REFNR'.
-      ls_seltab-sign   = 'I'.
-      ls_seltab-option = 'EQ'.
-      ls_seltab-low    = gv_scr_refnr.
-      APPEND ls_seltab TO lt_seltab.
-
-      " Call SE16N using the Standard SAP Function Module
-      CALL FUNCTION 'SE16N_INTERFACE'
-        EXPORTING
-          i_tab   = 'ZUPDT_BP_TOKEN'
-          i_edit  = space " Editing disabled
-        TABLES
-          it_selfields = lt_seltab.
+*      DATA: lt_seltab TYPE TABLE OF se16n_seltab,
+*            ls_seltab TYPE se16n_seltab.
+*
+*      " Define which Order Number to search for
+*      ls_seltab-field  = 'REFNR'.
+*      ls_seltab-sign   = 'I'.
+*      ls_seltab-option = 'EQ'.
+*      ls_seltab-low    = gv_scr_refnr.
+*      APPEND ls_seltab TO lt_seltab.
+*
+*      " Call SE16N using the Standard SAP Function Module
+*      CALL FUNCTION 'SE16N_INTERFACE'
+*        EXPORTING
+*          i_tab   = 'ZUPDT_BP_TOKEN'
+*          i_edit  = space " Editing disabled
+*        TABLES
+*          it_selfields = lt_seltab.
       " Remains on our popup screen after returning.
 
     WHEN 'SC_SAVE'.
       IF gv_scr_mode = 'E'.
+
         IF gv_scr_token IS INITIAL.
           MESSAGE 'Token / Card Number is mandatory!' TYPE 'S' DISPLAY LIKE 'E'.
+          EXIT.
+        ENDIF.
+
+        IF gv_scr_guid IS INITIAL.
+          MESSAGE 'Partner GUID is mandatory!' TYPE 'S' DISPLAY LIKE 'E'.
           EXIT.
         ENDIF.
 
         DATA: lv_bpguid_raw TYPE bu_partner_guid,
               ls_zupdt      TYPE zupdt_bp_token.
 
-        " Convert GUID format back to SAP format (RAW16)
         IF gv_scr_guid CA '-'.
           lv_bpguid_raw = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
-*          lv_bpguid_raw = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( CONV #( gv_scr_guid ) ).
         ELSE.
           lv_bpguid_raw = gv_scr_guid.
         ENDIF.
 
-        " Prepare the database record
         ls_zupdt-partner_guid = lv_bpguid_raw.
         ls_zupdt-token        = gv_scr_token.
         ls_zupdt-refnr        = gv_scr_refnr.
@@ -105,22 +124,20 @@ MODULE user_command_0400 INPUT.
         ls_zupdt-created_date = sy-datum.
         ls_zupdt-created_time = sy-uzeit.
 
-        " BP Status (Based on the previously determined gv_scr_bp variable)
-        IF gv_scr_bp IS NOT INITIAL.
-          ls_zupdt-partner = gv_scr_bp.
-          ls_zupdt-status  = zcl_updt_bp_token=>gc_update_status_update_req. " '02'
-        ELSE.
-          ls_zupdt-status  = zcl_updt_bp_token=>gc_update_status_bp_missing. " '01'
-        ENDIF.
+        CLEAR ls_zupdt-partner.
+        ls_zupdt-status = zcl_updt_bp_token=>gc_update_status_bp_missing.
 
-        "  Update table
         INSERT zupdt_bp_token FROM ls_zupdt.
         IF sy-subrc = 0.
-          MESSAGE 'Record successfully inserted!' TYPE 'S'.
-          " --- AUTO-COMMENT CODE WILL BE ADDED HERE LATER --- "
+          COMMIT WORK AND WAIT.
+
+          gv_save_success = abap_true.
+          MESSAGE 'New record successfully inserted!' TYPE 'S'.
           LEAVE TO SCREEN 0.
         ELSE.
-          MESSAGE 'Failed to insert record!' TYPE 'E'.
+          " Eğer birebir aynı kayıt atılmaya çalışılırsa DUMP yerine hata ver:
+          MESSAGE 'This exact record already exists! Cannot insert.' TYPE 'S' DISPLAY LIKE 'E'.
+          EXIT.
         ENDIF.
 
       ENDIF.
