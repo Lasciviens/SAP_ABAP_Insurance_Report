@@ -6,10 +6,24 @@ TABLES: zinsusale, mara, zssb_subs.
 CLASS lcl_main DEFINITION DEFERRED.
 DATA go_main TYPE REF TO lcl_main.
 
-DATA: gv_template       TYPE zinsusale-zcomment,
-      gv_row_id         TYPE i,
-      gv_screen_comment TYPE zinsusale-zcomment.
 
 DATA: gs_stable TYPE lvc_s_stbl.
 gs_stable-row = abap_true.
 gs_stable-col = abap_true.
+
+*Screen Variables:
+DATA: gv_template       TYPE zinsusale-zcomment,
+      gv_row_id         TYPE i,
+      gv_screen_comment TYPE zinsusale-zcomment.
+
+DATA: gv_scr_guid    TYPE string,               " External GUID
+      gv_scr_token   TYPE pca_mask_number,      " Token
+      gv_scr_refnr   TYPE zbilagnr,             " Doc nr
+      gv_scr_webshop TYPE zbutikk,              " Webshop ID
+      gv_scr_bp      TYPE bu_partner,           " BP
+      gv_scr_msg     TYPE string,               " Message
+      gv_scr_mode    TYPE c LENGTH 1,           " Screen Mode: 'V' (View/Read-Only), 'E' (Edit)
+      gv_refnr_exist TYPE abap_bool.            " Only REFNR found flag
+
+DATA: gv_scr_guid_ex TYPE bu_partner_guid.
+DATA: gv_save_success TYPE abap_bool.
