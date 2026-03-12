@@ -9,11 +9,10 @@
 MODULE status_0400 OUTPUT.
   IF gv_scr_guid IS NOT INITIAL.
     IF gv_scr_guid CA '-'.
-      " TRY-CATCH koyuyoruz ki kullanıcı eksik/hatalı GUID yazıp Enter'a basarsa sistem DUMP yemesin!
       TRY.
           gv_scr_guid_ex = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
         CATCH cx_root.
-          CLEAR gv_scr_guid_ex. " Hatalı formattaysa kutuyu temizle
+          CLEAR gv_scr_guid_ex.
       ENDTRY.
     ELSE.
       gv_scr_guid_ex = gv_scr_guid.
