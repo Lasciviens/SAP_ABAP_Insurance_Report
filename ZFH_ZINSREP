@@ -18,13 +18,13 @@
 *& Description:
 *& Transport:
 *&---------------------------------------------------------------------*
-REPORT zfh_zinsrep.
+REPORT zfh_zinsrep NO STANDARD PAGE HEADING.
 
 INCLUDE zssb_insrep_i_top.
 INCLUDE zssb_insrep_i_ssc.
 INCLUDE zssb_insrep_i_cls.
 INCLUDE zssb_insrep_i_0100.   "ALV Screen
-*INCLUDE zssb_insrep_i_0200.  "Mail Pop-Up Screen
+INCLUDE zssb_insrep_i_0200.   "Mail Pop-Up Screen
 INCLUDE zssb_insrep_i_0300.   "Comment Pop-Up Screen
 INCLUDE zssb_insrep_i_0400.   "Update Token Pop-Up Screen
 
