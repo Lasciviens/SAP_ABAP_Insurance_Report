@@ -1,0 +1,89 @@
+*&---------------------------------------------------------------------*
+*&  Include        ZSSB_INSREP_I_0200
+*&---------------------------------------------------------------------*
+MODULE status_0200 OUTPUT.
+  SET PF-STATUS 'STATUS_0100'.
+
+  IF rb_from_it = abap_true.
+    gv_mail_from = 'itsupport@power.no'.
+  ELSE.
+    gv_mail_from = |{ sy-uname } (Your SAP Email)|.
+  ENDIF.
+
+  IF go_editor_container IS INITIAL.   " Create TextEdit Container
+    CREATE OBJECT go_editor_container
+      EXPORTING
+        container_name = 'CC_MAIL_BODY'.
+    CREATE OBJECT go_text_editor
+      EXPORTING
+        parent                     = go_editor_container
+        wordwrap_mode              = cl_gui_textedit=>wordwrap_at_windowborder
+        wordwrap_position          = 256
+        wordwrap_to_linebreak_mode = cl_gui_textedit=>true.
+  ENDIF.
+
+  READ TABLE gt_mail_queue ASSIGNING FIELD-SYMBOL(<ls_q>) INDEX gv_queue_idx.
+  IF sy-subrc = 0.
+    gv_mail_to   = <ls_q>-mail_to.
+    gv_mail_cc   = <ls_q>-mail_cc.
+    gv_mail_subj = <ls_q>-mail_subj.
+    gv_mail_id   = <ls_q>-mail_id. " Mail ID box at the top right
+    go_text_editor->set_text_as_r3table( EXPORTING table = <ls_q>-mail_body ).
+  ENDIF.
+  gv_btn_send = |Send ({ gv_queue_idx }/{ lines( gt_mail_queue ) })|.   " Set the button name dynamically (e.g., Send 1/3)
+ENDMODULE.
+
+MODULE user_command_0200 INPUT.
+  " Save the latest changes made on the screen back to the draft just in case
+  READ TABLE gt_mail_queue ASSIGNING FIELD-SYMBOL(<ls_save_q>) INDEX gv_queue_idx.
+  IF sy-subrc = 0.
+    <ls_save_q>-mail_to   = gv_mail_to.
+    <ls_save_q>-mail_cc   = gv_mail_cc.
+    <ls_save_q>-mail_subj = gv_mail_subj.
+
+    go_text_editor->get_text_as_r3table(
+      IMPORTING
+        table = <ls_save_q>-mail_body
+      EXCEPTIONS
+        potential_data_loss = 1
+        OTHERS              = 2 ).
+
+    cl_gui_cfw=>flush( ).
+  ENDIF.
+
+  CASE sy-ucomm.
+    WHEN 'SC_CANCEL' OR 'EXIT'.
+      LEAVE TO SCREEN 0.
+
+    WHEN 'FC_FROM'.
+      " Radio button clicked, screen refreshed and returned to PBO. No extra processing needed.
+
+    WHEN 'SC_NEXT'.
+      IF gv_queue_idx < lines( gt_mail_queue ).
+        gv_queue_idx = gv_queue_idx + 1.
+      ENDIF.
+
+    WHEN 'SC_PREV'.
+      IF gv_queue_idx > 1.
+        gv_queue_idx = gv_queue_idx - 1.
+      ENDIF.
+
+    WHEN 'SC_SEND'.
+
+      go_main->tb_execute_mail( iv_mail_id = <ls_save_q>-mail_id ).
+
+      " Delete the successfully sent mail from the queue
+      DELETE gt_mail_queue INDEX gv_queue_idx.
+
+      " If the queue is completely empty, close the screen, we are done!
+      IF lines( gt_mail_queue ) = 0.
+        MESSAGE 'All mails sent successfully!' TYPE 'S'.
+        LEAVE TO SCREEN 0.
+      ELSE.
+        " Since the record below shifts into the deleted index, just perform a boundary (limit) check
+        IF gv_queue_idx > lines( gt_mail_queue ).
+          gv_queue_idx = lines( gt_mail_queue ).
+        ENDIF.
+      ENDIF.
+  ENDCASE.
+ENDMODULE.
