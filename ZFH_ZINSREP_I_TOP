@@ -25,5 +25,36 @@ DATA: gv_scr_guid    TYPE string,               " External GUID
       gv_scr_mode    TYPE c LENGTH 1,           " Screen Mode: 'V' (View/Read-Only), 'E' (Edit)
       gv_refnr_exist TYPE abap_bool.            " Only REFNR found flag
 
-DATA: gv_scr_guid_ex TYPE bu_partner_guid.
 DATA: gv_save_success TYPE abap_bool.
+
+" --- SCREEN 0200 (MAIL COCKPIT) VARIABLES ---
+DATA: gv_mail_to   TYPE string,
+      gv_mail_cc   TYPE string,
+      gv_mail_subj TYPE string,
+      gv_mail_id   TYPE string,
+      rb_from_it   TYPE c LENGTH 1 VALUE 'X', " Default IT Support
+      rb_from_my   TYPE c LENGTH 1,
+      gv_mail_from TYPE string,
+      gv_btn_send  TYPE string.
+
+" Text Editor Object (CL_GUI_TEXTEDIT)
+DATA: go_editor_container TYPE REF TO cl_gui_custom_container,
+      go_text_editor      TYPE REF TO cl_gui_textedit,
+      gt_mail_body        TYPE TABLE OF tdline.
+
+
+TYPES: ty_tdline_tab TYPE STANDARD TABLE OF char255 WITH DEFAULT KEY.
+" Mail Queue
+TYPES: BEGIN OF ty_mail_queue,
+         mail_id   TYPE string,
+         country   TYPE string,
+         store     TYPE zbutikk,
+         rows      TYPE lvc_t_row,
+         mail_to   TYPE string,
+         mail_cc   TYPE string,
+         mail_subj TYPE string,
+         mail_body TYPE ty_tdline_tab,
+       END OF ty_mail_queue.
+
+DATA: gt_mail_queue TYPE SORTED TABLE OF ty_mail_queue WITH UNIQUE KEY mail_id,
+      gv_queue_idx  TYPE i.
