@@ -15,15 +15,18 @@ CLASS lcl_main DEFINITION.
       call_screen_0100,
       display_alv_0100,
       tb_send_mail,
+      tb_check_voyado_missing  IMPORTING iv_guid           TYPE string
+                               RETURNING VALUE(rv_missing) TYPE string,
+      tb_execute_mail          IMPORTING iv_mail_id        TYPE string,
       tb_reset_flag,
       tb_find_imei,
-      tb_partner_va05  IMPORTING iv_partner TYPE kunnr,
-      tb_edit_comment  IMPORTING iv_index   TYPE lvc_s_row-index,
+      tb_partner_va05          IMPORTING iv_partner        TYPE kunnr,
+      tb_edit_comment          IMPORTING iv_index          TYPE lvc_s_row-index,
       tb_save_comment,
-      tb_details       IMPORTING iv_table TYPE tabname,
+      tb_details               IMPORTING iv_table          TYPE tabname,
       tb_update_token,
-      add_auto_comment IMPORTING iv_index TYPE lvc_s_row-index
-                                 iv_text  TYPE string.
+      add_auto_comment         IMPORTING iv_index TYPE lvc_s_row-index
+                                         iv_text  TYPE string.
 
   PRIVATE SECTION.
     CLASS-DATA:
@@ -70,6 +73,7 @@ CLASS lcl_main DEFINITION.
                             iv_text TYPE string,
 
       display_all_messages.
+
 
 ENDCLASS.
 
@@ -552,6 +556,8 @@ CLASS lcl_main IMPLEMENTATION.
       DATA(lt_fcat)   = VALUE lvc_t_fcat( ).
       DATA(ls_layout) = VALUE lvc_s_layo( ).
 
+      DATA(ls_variant) = VALUE disvariant( report = sy-repid ).
+
       DATA(lt_exclude) = me->alv_toolbar( ).
 
       me->f_cat( CHANGING ct_fcat = lt_fcat ).
@@ -560,6 +566,10 @@ CLASS lcl_main IMPLEMENTATION.
       mo_alv_grid->set_table_for_first_display(
               EXPORTING
                 is_layout            = ls_layout
+                is_variant           = ls_variant
+                i_save               = abap_true
+                i_default            = abap_true
+                i_bypassing_buffer   = abap_true
                 it_toolbar_excluding = lt_exclude
               CHANGING
                 it_outtab       = me->mt_alv
@@ -582,8 +592,9 @@ CLASS lcl_main IMPLEMENTATION.
           <lfs_fcat>-hotspot = abap_true.
         WHEN 'ZCOMMENT'.
           <lfs_fcat>-hotspot = abap_true.
+          <lfs_fcat>-tooltip = 'Click to add a comment'.
         WHEN 'ZZBPREF'.
-          <lfs_fcat>-hotspot = abap_true.
+*          <lfs_fcat>-hotspot = abap_true.
       ENDCASE.
     ENDLOOP.
   ENDMETHOD.
@@ -593,6 +604,7 @@ CLASS lcl_main IMPLEMENTATION.
     rs_layout-cwidth_opt = abap_true.
     rs_layout-sel_mode   = 'A'.
     rs_layout-ctab_fname = 'SCOL'.
+*    rs_layout-grid_title = 'Insurance Control'.
   ENDMETHOD.
 
   METHOD alv_toolbar.
@@ -624,7 +636,7 @@ CLASS lcl_main IMPLEMENTATION.
     APPEND ls_toolbar TO e_object->mt_toolbar.
     CLEAR ls_toolbar.
 
-    ls_toolbar-function  = 'BUT_MAIL'.       " Catch function
+    ls_toolbar-function  = 'BUT_MAIL'.
     ls_toolbar-icon      =  icon_eml.
     ls_toolbar-quickinfo = 'Send mail to VIP'.
     ls_toolbar-text      = 'Send Mail '.
@@ -734,14 +746,13 @@ CLASS lcl_main IMPLEMENTATION.
       mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
     ENDIF.
   ENDMETHOD.
-
   METHOD handle_menu_button.
     IF e_ucomm = 'BUT_DETAIL'.
 
       CALL METHOD e_object->add_function
         EXPORTING
-          fcode = 'DET_ZINS'     " Tıklanınca User Command'a gidecek kod
-          text  = 'ZINSUSALE'.   " Ekranda yazacak metin
+          fcode = 'DET_ZINS'
+          text  = 'ZINSUSALE'.
 
       CALL METHOD e_object->add_function
         EXPORTING
@@ -752,18 +763,163 @@ CLASS lcl_main IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD tb_send_mail.
-
     DATA(lt_rows) = me->get_selected_rows( ).
     CHECK lt_rows IS NOT INITIAL.
 
+    CLEAR: gt_mail_queue.
+
+    "Temporarily Group by Countries
+    TYPES: BEGIN OF ty_temp_grp,
+             country TYPE string,
+             store   TYPE zbutikk,
+             rows    TYPE lvc_t_row,
+           END OF ty_temp_grp.
+    DATA: lt_temp_grp TYPE TABLE OF ty_temp_grp.
+
     LOOP AT lt_rows INTO DATA(ls_row).
       READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX ls_row-index.
-      IF sy-subrc = 0.
-        " send mail to VIP
+      CHECK sy-subrc = 0.
+      READ TABLE lt_temp_grp ASSIGNING FIELD-SYMBOL(<lfs_grp>) WITH KEY country = <lfs_alv>-land.
+      IF sy-subrc <> 0.
+        APPEND VALUE #( country = <lfs_alv>-land store = <lfs_alv>-butikk ) TO lt_temp_grp ASSIGNING <lfs_grp>.
       ENDIF.
+      APPEND ls_row TO <lfs_grp>-rows.
     ENDLOOP.
 
-*       mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+    " Prepare the Queue (Drafts)
+    DATA: ls_queue TYPE ty_mail_queue.
+
+    LOOP AT lt_temp_grp INTO DATA(ls_grp).
+      CLEAR ls_queue.
+      ls_queue-country = ls_grp-country.
+      ls_queue-store   = ls_grp-store.
+      ls_queue-rows    = ls_grp-rows.
+      ls_queue-mail_to = |vip@power.{ to_lower( ls_grp-country ) }|.
+
+      CALL FUNCTION 'NUMBER_GET_NEXT'
+        EXPORTING
+          nr_range_nr = '01'
+          object      = 'ZINS_MAIL'
+        IMPORTING
+          number      = ls_queue-mail_id
+        EXCEPTIONS
+          OTHERS      = 1.
+
+      ls_queue-mail_subj = |Subscription Insurance Sales - #{ ls_queue-mail_id }|.
+
+      APPEND 'Hi VIP Team,' TO ls_queue-mail_body.
+      APPEND ' ' TO ls_queue-mail_body.
+      APPEND 'We have received the following subscription insurance sales in SAP, but the VoyadoID (GUID) is missing.' TO ls_queue-mail_body.
+      APPEND ' ' TO ls_queue-mail_body.
+
+      LOOP AT ls_grp-rows INTO DATA(ls_grp_row).
+        READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_a>) INDEX ls_grp_row-index.
+
+        IF <lfs_a>-zzbpref IS INITIAL OR <lfs_a>-zzbpref NS '-'.
+          APPEND |Doc nr: { <lfs_a>-refnr }| TO ls_queue-mail_body.
+        ELSE.
+          DATA(lv_missing_fields) = me->tb_check_voyado_missing( iv_guid = CONV #( <lfs_a>-zzbpref ) ).
+          IF lv_missing_fields IS NOT INITIAL.
+            APPEND |Doc nr: { <lfs_a>-refnr } (GUID: { <lfs_a>-zzbpref }) -> Missing Fields: { lv_missing_fields }| TO ls_queue-mail_body.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+
+      APPEND ' ' TO ls_queue-mail_body.
+      APPEND 'Could you please check and provide us with the valid VoyadoIDs for these transactions so we can process them?' TO ls_queue-mail_body.
+      APPEND ' ' TO ls_queue-mail_body.
+      APPEND '<i>Note: If you find duplicate profiles for this customer, please ensure you merge them into the profile that contains the active insurance subscription.</i>' TO ls_queue-mail_body.
+
+      " Add to Table with Unique Key
+      INSERT ls_queue INTO TABLE gt_mail_queue.
+    ENDLOOP.
+
+    gv_queue_idx = 1.
+    CALL SCREEN 0200 STARTING AT 5 5 ENDING AT 118 33.
+
+    mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+  ENDMETHOD.
+
+  METHOD tb_check_voyado_missing.
+    rv_missing = 'Email, Mobile Phone'. "Dummy. Will add Voyado proxy here.
+  ENDMETHOD.
+
+  METHOD tb_execute_mail.
+    READ TABLE gt_mail_queue ASSIGNING FIELD-SYMBOL(<ls_mail>) WITH TABLE KEY mail_id = iv_mail_id.
+    CHECK sy-subrc = 0.
+
+    TRY.
+        DATA(lo_send_request) = cl_bcs=>create_persistent( ).
+
+        DATA: lt_html_body TYPE TABLE OF soli,
+              ls_html_line TYPE soli.
+
+        ls_html_line-line = '<html style="font-family: Arial, sans-serif; font-size: 14px;"><body>'.
+        APPEND ls_html_line TO lt_html_body.
+
+        LOOP AT <ls_mail>-mail_body INTO DATA(lv_text_line).
+          ls_html_line-line = lv_text_line && '<br>'.
+          APPEND ls_html_line TO lt_html_body.
+        ENDLOOP.
+
+        ls_html_line-line = '<br><br>Kind regards,<br>IT Support</body></html>'.
+        APPEND ls_html_line TO lt_html_body.
+
+        DATA(lo_document) = cl_document_bcs=>create_document(
+                              i_type    = 'HTM'
+                              i_text    = lt_html_body
+                              i_subject = CONV #( <ls_mail>-mail_subj ) ).
+        lo_send_request->set_document( lo_document ).
+
+        DATA: lo_sender TYPE REF TO if_sender_bcs.
+        IF rb_from_it = abap_true.
+          lo_sender = cl_cam_address_bcs=>create_internet_address( 'itsupport@power.no' ).
+        ELSE.
+          lo_sender = cl_sapuser_bcs=>create( sy-uname ).
+        ENDIF.
+        lo_send_request->set_sender( lo_sender ).
+
+        " MULTIPLE EMAIL SUPPORT (To and CC)
+        DATA: lt_emails TYPE TABLE OF string,
+              lv_email  TYPE string.
+
+        " To Addresses
+        REPLACE ALL OCCURRENCES OF ',' IN <ls_mail>-mail_to WITH ';'.
+        SPLIT <ls_mail>-mail_to AT ';' INTO TABLE lt_emails.
+        LOOP AT lt_emails INTO lv_email.
+          CONDENSE lv_email.
+          CHECK lv_email IS NOT INITIAL.
+          DATA(lo_recipient) = cl_cam_address_bcs=>create_internet_address( CONV #( lv_email ) ).
+          lo_send_request->add_recipient( i_recipient = lo_recipient ).
+        ENDLOOP.
+
+        " CC Addresses
+        CLEAR lt_emails.
+        IF <ls_mail>-mail_cc IS NOT INITIAL.
+          REPLACE ALL OCCURRENCES OF ',' IN <ls_mail>-mail_cc WITH ';'.
+          SPLIT <ls_mail>-mail_cc AT ';' INTO TABLE lt_emails.
+          LOOP AT lt_emails INTO lv_email.
+            CONDENSE lv_email.
+            CHECK lv_email IS NOT INITIAL.
+            DATA(lo_cc) = cl_cam_address_bcs=>create_internet_address( CONV #( lv_email ) ).
+            lo_send_request->add_recipient( i_recipient = lo_cc i_copy = abap_true ).
+          ENDLOOP.
+        ENDIF.
+
+        " SEND MAIL!
+        DATA(lv_sent) = lo_send_request->send( i_with_error_screen = abap_true ).
+        IF lv_sent = abap_true.
+          COMMIT WORK.
+          MESSAGE |Mail successfully added to queue for { <ls_mail>-country }!| TYPE 'S'.
+
+          LOOP AT <ls_mail>-rows INTO DATA(ls_sel_row).
+            me->add_auto_comment( iv_index = ls_sel_row-index iv_text = |Mail sent. Ticket ID: #{ iv_mail_id }| ).
+          ENDLOOP.
+        ENDIF.
+
+      CATCH cx_bcs INTO DATA(lo_bcs_exc).
+        MESSAGE |Error sending mail: { lo_bcs_exc->get_text( ) }| TYPE 'S' DISPLAY LIKE 'E'.
+    ENDTRY.
   ENDMETHOD.
 
   METHOD tb_reset_flag.
@@ -1055,7 +1211,7 @@ CLASS lcl_main IMPLEMENTATION.
     ENDIF.
 
     CALL SCREEN 0400 STARTING AT 10 5
-                     ENDING   AT 105 15.
+                     ENDING   AT 115 15.
 
     IF sy-ucomm = 'SC_SE16N'.
       CLEAR sy-ucomm.
@@ -1074,15 +1230,15 @@ CLASS lcl_main IMPLEMENTATION.
 
       IF gv_scr_guid IS NOT INITIAL.
         DATA(lv_raw_guid) = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
-        IF <lfs_alv>-zzbpref <> lv_raw_guid.
+        IF <lfs_alv>-zzbpref <> gv_scr_guid.
           lv_new_comment    = lv_new_comment && ' (GUID Added / Changed)'.
-          <lfs_alv>-zzbpref = lv_raw_guid.
+          <lfs_alv>-zzbpref = gv_scr_guid.
           lv_db_update      = abap_true.
         ENDIF.
       ENDIF.
 
       IF gv_scr_token IS NOT INITIAL AND <lfs_alv>-zztoken <> gv_scr_token.
-        lv_new_comment    = lv_new_comment && ' (Token eklendi/gnclendi)'.
+        lv_new_comment    = lv_new_comment && ' (Token Added / Changed)'.
         <lfs_alv>-zztoken = gv_scr_token.
         lv_db_update      = abap_true.
       ENDIF.
