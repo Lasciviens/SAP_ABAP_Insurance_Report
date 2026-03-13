@@ -8,17 +8,19 @@
 *----------------------------------------------------------------------*
 MODULE status_0400 OUTPUT.
   IF gv_scr_guid IS NOT INITIAL.
+    DATA(lv_guid_upper) = gv_scr_guid.
+    TRANSLATE lv_guid_upper TO UPPER CASE.
     IF gv_scr_guid CA '-'.
       TRY.
-          gv_scr_guid_ex = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
+          zupdt_bp_token-partner_guid = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
         CATCH cx_root.
-          CLEAR gv_scr_guid_ex.
+          CLEAR zupdt_bp_token-partner_guid.
       ENDTRY.
     ELSE.
-      gv_scr_guid_ex = gv_scr_guid.
+      zupdt_bp_token-partner_guid = gv_scr_guid.
     ENDIF.
   ELSE.
-    CLEAR gv_scr_guid_ex.
+    CLEAR zupdt_bp_token-partner_guid.
   ENDIF.
   LOOP AT SCREEN.
 
@@ -65,6 +67,7 @@ ENDMODULE.
 *&---------------------------------------------------------------------*
 *       text
 *----------------------------------------------------------------------*
+
 MODULE user_command_0400 INPUT.
   CASE sy-ucomm.
 
@@ -74,25 +77,6 @@ MODULE user_command_0400 INPUT.
     WHEN 'SC_SE16N'.
       LEAVE TO SCREEN 0.
 *      Calling SE16N from a pop-up screen fails. Close the screen and call tb_update_token method.
-
-*      DATA: lt_seltab TYPE TABLE OF se16n_seltab,
-*            ls_seltab TYPE se16n_seltab.
-*
-*      " Define which Order Number to search for
-*      ls_seltab-field  = 'REFNR'.
-*      ls_seltab-sign   = 'I'.
-*      ls_seltab-option = 'EQ'.
-*      ls_seltab-low    = gv_scr_refnr.
-*      APPEND ls_seltab TO lt_seltab.
-*
-*      " Call SE16N using the Standard SAP Function Module
-*      CALL FUNCTION 'SE16N_INTERFACE'
-*        EXPORTING
-*          i_tab   = 'ZUPDT_BP_TOKEN'
-*          i_edit  = space " Editing disabled
-*        TABLES
-*          it_selfields = lt_seltab.
-      " Remains on our popup screen after returning.
 
     WHEN 'SC_SAVE'.
       IF gv_scr_mode = 'E'.
