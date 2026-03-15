@@ -11,7 +11,7 @@ DATA: gs_stable TYPE lvc_s_stbl.
 gs_stable-row = abap_true.
 gs_stable-col = abap_true.
 
-*Screen Variables:
+*Screen 0400 Variables:
 DATA: gv_template       TYPE zinsusale-zcomment,
       gv_row_id         TYPE i,
       gv_screen_comment TYPE zinsusale-zcomment.
@@ -23,6 +23,10 @@ DATA: gv_scr_guid    TYPE string,               " External GUID
       gv_scr_bp      TYPE bu_partner,           " BP
       gv_scr_msg     TYPE string,               " Message
       gv_scr_mode    TYPE c LENGTH 1,           " Screen Mode: 'V' (View/Read-Only), 'E' (Edit)
+      gv_scr_icon1    TYPE icon_d,
+      gv_scr_icon2    TYPE icon_d,
+      gv_scr_icon3    TYPE icon_d,
+      gv_scr_icon4    TYPE icon_d,
       gv_refnr_exist TYPE abap_bool.            " Only REFNR found flag
 
 DATA: gv_save_success TYPE abap_bool.
