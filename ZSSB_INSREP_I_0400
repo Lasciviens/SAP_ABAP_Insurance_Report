@@ -1,73 +1,50 @@
-*----------------------------------------------------------------------*
-***INCLUDE ZSSB_INSREP_I_0400.
-*----------------------------------------------------------------------*
 *&---------------------------------------------------------------------*
 *&      Module  STATUS_0400  OUTPUT
 *&---------------------------------------------------------------------*
-*       text
-*----------------------------------------------------------------------*
 MODULE status_0400 OUTPUT.
   IF gv_scr_guid IS NOT INITIAL.
-    DATA(lv_guid_upper) = gv_scr_guid.
-    TRANSLATE lv_guid_upper TO UPPER CASE.
-    IF gv_scr_guid CA '-'.
-      TRY.
-          zupdt_bp_token-partner_guid = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
-        CATCH cx_root.
-          CLEAR zupdt_bp_token-partner_guid.
-      ENDTRY.
-    ELSE.
-      zupdt_bp_token-partner_guid = gv_scr_guid.
-    ENDIF.
+    TRANSLATE gv_scr_guid TO UPPER CASE.
+
+    zupdt_bp_token-partner_guid = go_main->convert_guid_to_raw( iv_guid = gv_scr_guid ).
   ELSE.
     CLEAR zupdt_bp_token-partner_guid.
   ENDIF.
-  LOOP AT SCREEN.
 
-    " 1. Hide or Show the BP Number Box (BP1)
+  LOOP AT SCREEN.
+    IF screen-name = 'GV_SCR_REFNR'
+    OR screen-name = 'GV_SCR_WEBSHOP'
+    OR screen-name = 'ZUPDT_BP_TOKEN-PARTNER_GUID'
+    or screen-name = 'GV_SCR_ICON1'
+    or screen-name = 'GV_SCR_ICON2'
+    or screen-name = 'GV_SCR_ICON3'
+    or screen-name = 'GV_SCR_ICON4'.
+      screen-input = 0.
+    ENDIF.
+
     IF screen-group1 = 'BP1'.
       IF gv_scr_bp IS INITIAL.
-        screen-active = 0. " If BP is empty, make it invisible
+        screen-active = 0.
       ELSE.
         screen-active = 1.
-        screen-input  = 0. " If BP exists, show it but read-only
+        screen-input  = 0.
       ENDIF.
     ENDIF.
 
-    " 2. Manage the SE16N Button (SE1)
     IF screen-group1 = 'SE1'.
-      IF gv_scr_mode = 'V' OR gv_refnr_exist = abap_true.
-        screen-active = 1. " Show if record exists
+      IF gv_refnr_exist = abap_true.
+        screen-active = 1.
       ELSE.
-        screen-active = 0. " No need for SE16N button for a new record, hide it
-      ENDIF.
-    ENDIF.
-
-    " 3. Read-Only (V) Mode vs Edit (E) Mode
-    IF gv_scr_mode = 'V'.
-      " If an identical record exists, lock everything
-      IF screen-name = 'BTN_SAVE'.
-        screen-active = 0. " Record already exists, hide the Save
-      ENDIF.
-      IF screen-group1 <> 'SE1' AND screen-name <> 'BTN_CANCEL'.
-        screen-input = 0. " Gray out all other fields
-      ENDIF.
-    ELSE.
-      " Even in Edit (E) mode, Refnr and Webshop cannot be changed; they are fixed
-      IF screen-name = 'GV_SCR_REFNR' OR screen-name = 'GV_SCR_WEBSHOP'.
-        screen-input = 0.
+        screen-active = 0.
       ENDIF.
     ENDIF.
 
     MODIFY SCREEN.
   ENDLOOP.
 ENDMODULE.
+
 *&---------------------------------------------------------------------*
 *&      Module  USER_COMMAND_0400  INPUT
 *&---------------------------------------------------------------------*
-*       text
-*----------------------------------------------------------------------*
-
 MODULE user_command_0400 INPUT.
   CASE sy-ucomm.
 
@@ -76,54 +53,9 @@ MODULE user_command_0400 INPUT.
 
     WHEN 'SC_SE16N'.
       LEAVE TO SCREEN 0.
-*      Calling SE16N from a pop-up screen fails. Close the screen and call tb_update_token method.
 
     WHEN 'SC_SAVE'.
-      IF gv_scr_mode = 'E'.
-
-        IF gv_scr_token IS INITIAL.
-          MESSAGE 'Token / Card Number is mandatory!' TYPE 'S' DISPLAY LIKE 'E'.
-          EXIT.
-        ENDIF.
-
-        IF gv_scr_guid IS INITIAL.
-          MESSAGE 'Partner GUID is mandatory!' TYPE 'S' DISPLAY LIKE 'E'.
-          EXIT.
-        ENDIF.
-
-        DATA: lv_bpguid_raw TYPE bu_partner_guid,
-              ls_zupdt      TYPE zupdt_bp_token.
-
-        IF gv_scr_guid CA '-'.
-          lv_bpguid_raw = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
-        ELSE.
-          lv_bpguid_raw = gv_scr_guid.
-        ENDIF.
-
-        ls_zupdt-partner_guid = lv_bpguid_raw.
-        ls_zupdt-token        = gv_scr_token.
-        ls_zupdt-refnr        = gv_scr_refnr.
-        ls_zupdt-butikk       = gv_scr_webshop.
-        ls_zupdt-created_date = sy-datum.
-        ls_zupdt-created_time = sy-uzeit.
-
-        CLEAR ls_zupdt-partner.
-        ls_zupdt-status = zcl_updt_bp_token=>gc_update_status_bp_missing.
-
-        INSERT zupdt_bp_token FROM ls_zupdt.
-        IF sy-subrc = 0.
-          COMMIT WORK AND WAIT.
-
-          gv_save_success = abap_true.
-          MESSAGE 'New record successfully inserted!' TYPE 'S'.
-          LEAVE TO SCREEN 0.
-        ELSE.
-          " Eğer birebir aynı kayıt atılmaya çalışılırsa DUMP yerine hata ver:
-          MESSAGE 'This exact record already exists! Cannot insert.' TYPE 'S' DISPLAY LIKE 'E'.
-          EXIT.
-        ENDIF.
-
-      ENDIF.
+      go_main->save_token( ).
 
   ENDCASE.
 ENDMODULE.
