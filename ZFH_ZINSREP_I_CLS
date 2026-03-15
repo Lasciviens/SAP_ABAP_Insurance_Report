@@ -25,8 +25,16 @@ CLASS lcl_main DEFINITION.
       tb_save_comment,
       tb_details               IMPORTING iv_table          TYPE tabname,
       tb_update_token,
-      add_auto_comment         IMPORTING iv_index TYPE lvc_s_row-index
-                                         iv_text  TYPE string.
+      save_token,
+      convert_guid_to_raw    IMPORTING iv_guid       TYPE string
+                             RETURNING VALUE(rv_raw) TYPE bu_partner_guid,
+
+      convert_guid_to_hyphen IMPORTING iv_raw         TYPE any
+                             RETURNING VALUE(rv_guid) TYPE string,
+
+      add_auto_comment         IMPORTING iv_index    TYPE lvc_s_row-index
+                                         iv_action   TYPE string
+                                         is_new_data TYPE zssb_s_zinsrep OPTIONAL.
 
   PRIVATE SECTION.
     CLASS-DATA:
@@ -913,7 +921,7 @@ CLASS lcl_main IMPLEMENTATION.
           MESSAGE |Mail successfully added to queue for { <ls_mail>-country }!| TYPE 'S'.
 
           LOOP AT <ls_mail>-rows INTO DATA(ls_sel_row).
-            me->add_auto_comment( iv_index = ls_sel_row-index iv_text = |Mail sent. Ticket ID: #{ iv_mail_id }| ).
+            me->add_auto_comment( iv_index = ls_sel_row-index iv_action = |Mail sent. Ticket ID: #{ iv_mail_id }| ).
           ENDLOOP.
         ENDIF.
 
@@ -1123,8 +1131,10 @@ CLASS lcl_main IMPLEMENTATION.
     READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX ls_row-index.
     CHECK sy-subrc = 0.
 
-    CLEAR: zupdt_bp_token-partner_guid, gv_scr_guid, gv_scr_token, gv_scr_refnr, gv_scr_webshop, gv_scr_bp, gv_scr_msg, gv_scr_mode, gv_refnr_exist.
+    " Ekran degiskenlerini tertemiz yapalim
+    CLEAR: zupdt_bp_token-partner_guid, gv_scr_guid, gv_scr_token, gv_scr_refnr, gv_scr_webshop, gv_scr_bp, gv_scr_msg, gv_refnr_exist.
 
+    " ALV'den verileri SADECE 1 KERE al (Senin talimatin)
     gv_scr_refnr = <lfs_alv>-refnr.
     gv_scr_token = <lfs_alv>-zztoken.
 
@@ -1135,143 +1145,281 @@ CLASS lcl_main IMPLEMENTATION.
       WHEN '7'. gv_scr_webshop = '7921'.
     ENDCASE.
 
-    DATA: lv_alv_guid_raw TYPE bu_partner_guid.
-    lv_alv_guid_raw = <lfs_alv>-zzbpref.
+    gv_scr_guid = me->convert_guid_to_hyphen( iv_raw = <lfs_alv>-zzbpref ).
+*    zupdt_bp_token-partner_guid = me->convert_guid_to_raw( iv_guid = gv_scr_guid ).
 
-    SELECT SINGLE partner_guid INTO @DATA(lv_check_full) "Full key check
-      FROM zupdt_bp_token
-     WHERE partner_guid = @lv_alv_guid_raw
-       AND token        = @gv_scr_token
-       AND refnr        = @gv_scr_refnr.
-
-    IF sy-subrc = 0. " Exact existing record -> Lock
-      gv_scr_mode    = 'V'.
+    " Arka planda sadece bilgi amaciyla eski kayit kontrolu yap
+    SELECT SINGLE refnr FROM zupdt_bp_token INTO @DATA(lv_dummy) WHERE refnr = @gv_scr_refnr.
+    IF sy-subrc = 0.
       gv_refnr_exist = abap_true.
-      gv_scr_msg     = 'This exact record already exists. (Read-Only)'.
-
-      IF <lfs_alv>-zzbpref IS NOT INITIAL.
-        gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( CONV #( <lfs_alv>-zzbpref ) ).
-        zupdt_bp_token-partner_guid = <lfs_alv>-zzbpref.
-      ENDIF.
-
+      gv_scr_msg     = 'Warning: Previous token records exist for this document. You can check details.'.
+      gv_scr_icon1 = gv_scr_icon2 = gv_scr_icon3 = gv_scr_icon4 = icon_message_warning.
     ELSE.
-
-      SELECT * FROM zupdt_bp_token
-            WHERE refnr = @gv_scr_refnr
-            ORDER BY created_date DESCENDING, created_time DESCENDING
-            INTO @DATA(ls_existing)
-            UP TO 1 ROWS.
-      ENDSELECT.
-
-      IF sy-subrc = 0.  " Existing rec. -> Warning pop-up
-        gv_refnr_exist = abap_true.
-
-        DATA: lv_answer TYPE c.
-        CALL FUNCTION 'POPUP_TO_CONFIRM'
-          EXPORTING
-            titlebar              = 'Warning: Record Exists!'
-            text_question         = 'A different token update already exists for this document. Want to add a NEW one?'
-            text_button_1         = 'Yes, Add New'
-            text_button_2         = 'No, View Existing'
-            display_cancel_button = abap_true
-          IMPORTING
-            answer                = lv_answer.
-
-        IF lv_answer = 'A'. " Cancel
-          RETURN.
-        ENDIF.
-
-        IF lv_answer = '1'. " Yes, Add New ->  editable
-          gv_scr_mode = 'E'.
-          gv_scr_msg  = 'Adding a new record for the same Document.'.
-          IF <lfs_alv>-zzbpref IS NOT INITIAL.
-            gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( CONV #( <lfs_alv>-zzbpref ) ).
-            zupdt_bp_token-partner_guid = ls_existing-partner_guid.
-          ENDIF.
-        ELSE.               " No, View Existing ->  Read-Only
-          gv_scr_mode = 'V'.
-          gv_scr_msg  = 'Showing existing record from Database. (Read-Only)'.
-          IF ls_existing-partner_guid IS NOT INITIAL.
-            gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( ls_existing-partner_guid ).
-            zupdt_bp_token-partner_guid = ls_existing-partner_guid.
-          ENDIF.
-          gv_scr_token = ls_existing-token.
-          gv_scr_bp    = ls_existing-partner.
-        ENDIF.
-
-      ELSE.
-        " No Rec. -> New Rec.
-        gv_scr_mode = 'E'.
-        gv_scr_msg  = 'Ready to register new token update.'.
-        IF <lfs_alv>-zzbpref IS NOT INITIAL.
-          gv_scr_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( CONV #( <lfs_alv>-zzbpref ) ).
-          zupdt_bp_token-partner_guid = ls_existing-partner_guid.
-        ENDIF.
-      ENDIF.
+      gv_scr_msg     = 'Ready to register new token update.'.
+      gv_scr_icon1 = gv_scr_icon2 = gv_scr_icon3 = gv_scr_icon4 = icon_green_light.
     ENDIF.
 
-    CALL SCREEN 0400 STARTING AT 10 5
-                     ENDING   AT 115 15.
+    " Ekrani cagir!
+    CALL SCREEN 0400 STARTING AT 10 5 ENDING AT 115 15.
 
     IF sy-ucomm = 'SC_SE16N'.
       CLEAR sy-ucomm.
       me->tb_details( iv_table = 'ZUPDT_BP_TOKEN' ).
+    ENDIF.
+  ENDMETHOD.
+
+
+  METHOD save_token.
+    " 1. Ekrandan gelen gizli boşlukları temizle
+    CONDENSE gv_scr_guid NO-GAPS.
+    CONDENSE gv_scr_token. " Token formatını bozmamak için sadece CONDENSE yapıyoruz
+
+    " 2. Zorunlu Alan Kontrolleri
+    IF gv_scr_token IS INITIAL.
+      MESSAGE 'Token / Card Number is mandatory!' TYPE 'S' DISPLAY LIKE 'E'.
       RETURN.
     ENDIF.
 
-    " Auto-Comment
-    IF gv_save_success = abap_true.
-      CLEAR gv_save_success.
+    IF gv_scr_guid IS INITIAL.
+      MESSAGE 'Partner GUID is mandatory!' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
 
-      DATA: lv_new_comment TYPE string,
-            lv_db_update   TYPE abap_bool.
+    " -----------------------------------------------------------------------
+    " 3. KATI GUID VALIDASYONU (Sadece 36 Karakter ve Tireli Format)
+    " -----------------------------------------------------------------------
+    DATA(lv_clean_guid) = gv_scr_guid.
+    DATA(lv_guid_len)   = strlen( lv_clean_guid ).
 
-      lv_new_comment = 'Token Update Req.'.
+    " Test 1: Sadece 36 karakter kabul ediyoruz! (32 karakter yasaklandı)
+    IF lv_guid_len <> 36.
+      MESSAGE 'Invalid length! You must enter the full 36-character hyphenated GUID.' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
 
-      IF gv_scr_guid IS NOT INITIAL.
-        DATA(lv_raw_guid) = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( gv_scr_guid ).
-        IF <lfs_alv>-zzbpref <> gv_scr_guid.
-          lv_new_comment    = lv_new_comment && ' (GUID Added / Changed)'.
-          <lfs_alv>-zzbpref = gv_scr_guid.
-          lv_db_update      = abap_true.
-        ENDIF.
+    " Test 2: Geçerli Karakter Kontrolü (Sadece Hexadecimal ve Tire)
+    IF lv_clean_guid CN '0123456789ABCDEFabcdef-'.
+      MESSAGE 'Invalid characters! A GUID can only contain numbers (0-9), letters (A-F), and hyphens.' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+
+    " Test 3: Tirelerin konumu tam olarak 8-4-4-4-12 formatında olmalı!
+    IF lv_clean_guid+8(1)  <> '-' OR
+       lv_clean_guid+13(1) <> '-' OR
+       lv_clean_guid+18(1) <> '-' OR
+       lv_clean_guid+23(1) <> '-'.
+      MESSAGE 'Invalid format! Hyphens must be placed exactly as: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+    " -----------------------------------------------------------------------
+
+    " 4. Merkezi metod ile RAW formata çevir (ZUPDT formatı)
+    DATA(lv_bpguid_raw) = me->convert_guid_to_raw( iv_guid = lv_clean_guid ).
+
+    " Son Güvenlik Duvarı: Çeviri herhangi bir sebeple çökerse işlemi durdur!
+    IF lv_bpguid_raw IS INITIAL.
+      MESSAGE 'Critical Error: The provided GUID is corrupted and cannot be processed.' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+
+    " 5. BİREBİR AYNI KAYIT KONTROLÜ (Artık Uyarı Veriyor, Engellemiyor)
+    SELECT SINGLE partner_guid INTO @DATA(lv_check_full)
+      FROM zupdt_bp_token
+     WHERE partner_guid = @lv_bpguid_raw
+       AND token        = @gv_scr_token
+       AND refnr        = @gv_scr_refnr.
+
+    IF sy-subrc = 0.
+      DATA: lv_ans_exact TYPE c.
+      CALL FUNCTION 'POPUP_TO_CONFIRM'
+        EXPORTING
+          titlebar              = 'Warning: Exact Match!'
+          text_question         = 'This EXACT SAME record (Same GUID & Token) already exists! Do you still want to insert a duplicate?'
+          text_button_1         = 'Yes'
+          text_button_2         = 'No'
+          display_cancel_button = abap_true
+        IMPORTING
+          answer                = lv_ans_exact.
+
+      IF lv_ans_exact <> '1'.
+        MESSAGE 'Action cancelled.' TYPE 'S'.
+        RETURN.
       ENDIF.
 
-      IF gv_scr_token IS NOT INITIAL AND <lfs_alv>-zztoken <> gv_scr_token.
-        lv_new_comment    = lv_new_comment && ' (Token Added / Changed)'.
-        <lfs_alv>-zztoken = gv_scr_token.
-        lv_db_update      = abap_true.
+    ELSEIF gv_refnr_exist = abap_true.
+      " 6. FARKLI KAYIT AMA AYNI BELGE KONTROLÜ (Birebir aynı değilse ama belgeye ait başka kayıt varsa)
+      DATA: lv_ans_diff TYPE c.
+      CALL FUNCTION 'POPUP_TO_CONFIRM'
+        EXPORTING
+          titlebar              = 'Warning: Record Exists!'
+          text_question         = |A different record already exists for Document { gv_scr_refnr }. Are you sure you want to add a NEW one?|
+          text_button_1         = 'Yes'
+          text_button_2         = 'No'
+          display_cancel_button = abap_true
+        IMPORTING
+          answer                = lv_ans_diff.
+
+      IF lv_ans_diff <> '1'.
+        MESSAGE 'Action cancelled.' TYPE 'S'.
+        RETURN.
       ENDIF.
+    ENDIF.
 
-      me->add_auto_comment( iv_index = ls_row-index iv_text = lv_new_comment ).
+    " 7. TEMIZ KAYIT İŞLEMİ
+    DATA: ls_zupdt TYPE zupdt_bp_token.
+    ls_zupdt-partner_guid = lv_bpguid_raw.
+    ls_zupdt-token        = gv_scr_token.
+    ls_zupdt-refnr        = gv_scr_refnr.
+    ls_zupdt-butikk       = gv_scr_webshop.
+    ls_zupdt-created_date = sy-datum.
+    ls_zupdt-created_time = sy-uzeit.
+    ls_zupdt-status       = zcl_updt_bp_token=>gc_update_status_bp_missing.
 
-      IF lv_db_update = abap_true.
-        UPDATE zinsusale
-           SET zzbpref = @<lfs_alv>-zzbpref,
-               zztoken = @<lfs_alv>-zztoken
-         WHERE polisenr = @<lfs_alv>-polisenr.
+    INSERT zupdt_bp_token FROM ls_zupdt.
+    IF sy-subrc = 0.
+      COMMIT WORK AND WAIT.
 
-        IF sy-subrc = 0.
-          COMMIT WORK AND WAIT.
-        ENDIF.
-      ENDIF.
+      " 8. AKILLI YORUM VE ALV GÜNCELLEMESİ
+      READ TABLE me->get_selected_rows( ) INTO DATA(ls_row) INDEX 1.
+      READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX ls_row-index.
 
-      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+      DATA(ls_new_alv) = <lfs_alv>.
+      ls_new_alv-zzbpref = lv_clean_guid.
+      ls_new_alv-zztoken = gv_scr_token.
 
+      " Kıyaslamayı, yorum metnini ve DB Update'i merkeze paslıyoruz
+      me->add_auto_comment(
+        iv_index    = ls_row-index
+        iv_action   = 'Token Update Req.'
+        is_new_data = ls_new_alv ).
+
+      MESSAGE 'New record successfully inserted!' TYPE 'S'.
+      LEAVE TO SCREEN 0. " Her şey harika, ekranı kapat.
+    ELSE.
+      MESSAGE 'Database error during insertion!' TYPE 'S' DISPLAY LIKE 'E'.
     ENDIF.
   ENDMETHOD.
+
+  METHOD convert_guid_to_raw.
+    DATA(lv_clean) = iv_guid.
+    CONDENSE lv_clean NO-GAPS.
+    CHECK lv_clean IS NOT INITIAL.
+
+    IF lv_clean CA '-'.
+      TRY.
+          rv_raw = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( lv_clean ).
+        CATCH cx_root.
+          CLEAR rv_raw. " Çökerse 00000000000000000000000000000000 olur
+      ENDTRY.
+    ELSE.
+      " TİRESİZ OLSA BİLE GEÇERLİ BİR HEX Mİ DİYE ZORLA TEST ET!
+      TRY.
+          rv_raw = CONV bu_partner_guid( lv_clean ).
+        CATCH cx_root.
+          CLEAR rv_raw. " Çökerse 00000000000000000000000000000000 olur
+      ENDTRY.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD convert_guid_to_hyphen.
+    DATA(lv_clean) = CONV string( iv_raw ).
+    CONDENSE lv_clean NO-GAPS.
+    CHECK lv_clean IS NOT INITIAL.
+
+    IF lv_clean NA '-'. " ALV'den tiresiz (RAW) gelirse tireliye çevir
+      TRY.
+          DATA(lv_raw_bytes) = CONV bu_partner_guid( lv_clean ).
+          rv_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( lv_raw_bytes ).
+        CATCH cx_root.
+          rv_guid = lv_clean. " Çevrilemezse olduğu gibi bırak, Save'deki 32/36 kontrolü yakalar
+      ENDTRY.
+    ELSE.
+      rv_guid = lv_clean. " Zaten tireli
+    ENDIF.
+
+    TRANSLATE rv_guid TO UPPER CASE.
+  ENDMETHOD.
+
+*  METHOD add_auto_comment.
+*    READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX iv_index.
+*    CHECK sy-subrc = 0.
+*
+*    DATA(lv_prefix) = |{ sy-uname } { sy-datum DATE = USER }: |.
+*    IF <lfs_alv>-zcomment IS INITIAL.
+*      <lfs_alv>-zcomment = |{ lv_prefix }{ iv_text }|.
+*    ELSE.
+*      <lfs_alv>-zcomment = |{ lv_prefix }{ iv_text } // { <lfs_alv>-zcomment }|.
+*    ENDIF.
+*
+*    UPDATE zinsusale
+*       SET zcomment = @<lfs_alv>-zcomment
+*     WHERE polisenr = @<lfs_alv>-polisenr.
+*
+*    IF sy-subrc = 0.
+*      COMMIT WORK.
+*      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+*    ENDIF.
+*  ENDMETHOD.
 
   METHOD add_auto_comment.
     READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX iv_index.
     CHECK sy-subrc = 0.
 
-    DATA(lv_prefix) = |{ sy-uname } { sy-datum DATE = USER }: |.
-    IF <lfs_alv>-zcomment IS INITIAL.
-      <lfs_alv>-zcomment = |{ lv_prefix }{ iv_text }|.
-    ELSE.
-      <lfs_alv>-zcomment = |{ lv_prefix }{ iv_text } // { <lfs_alv>-zcomment }|.
+    DATA: lv_added       TYPE string,
+          lv_changed     TYPE string,
+          lv_action_text TYPE string.
+
+    lv_action_text = iv_action. " Örn: 'Token Update Req.' veya 'Mail Sent.'
+
+    " 1. EĞER YENİ VERİ GELDİYSE AKILLI KIYASLAMA YAP
+    IF is_new_data IS SUPPLIED.
+
+      " -- GUID Kıyaslaması --
+      IF is_new_data-zzbpref IS NOT INITIAL AND <lfs_alv>-zzbpref IS INITIAL.
+        lv_added = lv_added && |GUID, |.
+      ELSEIF is_new_data-zzbpref <> <lfs_alv>-zzbpref.
+        lv_changed = lv_changed && |GUID, |.
+      ENDIF.
+
+      " -- Token Kıyaslaması --
+      IF is_new_data-zztoken IS NOT INITIAL AND <lfs_alv>-zztoken IS INITIAL.
+        lv_added = lv_added && |Token, |.
+      ELSEIF is_new_data-zztoken <> <lfs_alv>-zztoken.
+        lv_changed = lv_changed && |Token, |.
+      ENDIF.
+
+      " -- IMEI Kıyaslaması --
+      IF is_new_data-zz_imei IS NOT INITIAL AND <lfs_alv>-zz_imei IS INITIAL.
+        lv_added = lv_added && |IMEI, |.
+      ELSEIF is_new_data-zz_imei <> <lfs_alv>-zz_imei.
+        lv_changed = lv_changed && |IMEI, |.
+      ENDIF.
+
+      " Çıktıyı Formatlama (Sondaki ', ' virgül ve boşlukları temizle)
+      IF lv_added IS NOT INITIAL.
+        DATA(lv_len_a) = strlen( lv_added ) - 2.
+        lv_added = lv_added(lv_len_a).
+        lv_action_text = lv_action_text && | -> Added: ({ lv_added })|.
+      ENDIF.
+
+      IF lv_changed IS NOT INITIAL.
+        DATA(lv_len_c) = strlen( lv_changed ) - 2.
+        lv_changed = lv_changed(lv_len_c).
+        lv_action_text = lv_action_text && | -> Changed: ({ lv_changed })|.
+      ENDIF.
+
     ENDIF.
 
+    " 2. YORUMU OLUŞTUR VE ALV'Yİ GÜNCELLE
+    DATA(lv_prefix) = |{ sy-uname } { sy-datum DATE = USER }: |.
+
+    IF <lfs_alv>-zcomment IS INITIAL.
+      <lfs_alv>-zcomment = |{ lv_prefix }{ lv_action_text }|.
+    ELSE.
+      <lfs_alv>-zcomment = |{ lv_prefix }{ lv_action_text } // { <lfs_alv>-zcomment }|.
+    ENDIF.
+
+    " 3. VERİTABANI GÜNCELLEMESİ (SADECE YORUM ALANI!)
     UPDATE zinsusale
        SET zcomment = @<lfs_alv>-zcomment
      WHERE polisenr = @<lfs_alv>-polisenr.
