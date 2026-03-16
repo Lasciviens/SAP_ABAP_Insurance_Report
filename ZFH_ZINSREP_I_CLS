@@ -14,16 +14,23 @@ CLASS lcl_main DEFINITION.
       run,
       call_screen_0100,
       display_alv_0100,
-      tb_send_mail,
+
+      tb_check_voyado_btn,
       tb_check_voyado_missing  IMPORTING iv_guid           TYPE string
+                                         iv_store          TYPE zbutikk
                                RETURNING VALUE(rv_missing) TYPE string,
-      tb_execute_mail          IMPORTING iv_mail_id        TYPE string,
+      find_mail             IMPORTING iv_uname        TYPE syuname
+                            RETURNING VALUE(rv_email) TYPE string,
+      tb_prepare_mail,
+      tb_execute_mail          IMPORTING iv_mail_id        TYPE string
+                               RETURNING VALUE(rv_success) TYPE abap_bool,
       tb_reset_flag,
       tb_find_imei,
       tb_partner_va05          IMPORTING iv_partner        TYPE kunnr,
       tb_edit_comment          IMPORTING iv_index          TYPE lvc_s_row-index,
       tb_save_comment,
       tb_details               IMPORTING iv_table          TYPE tabname,
+      tb_edit_policy,
       tb_update_token,
       save_token,
       convert_guid_to_raw    IMPORTING iv_guid       TYPE string
@@ -631,12 +638,19 @@ CLASS lcl_main IMPLEMENTATION.
     DATA: ls_toolbar TYPE stb_button.
     " Icon finds in se38 - SHOWICON
 
-    ls_toolbar-function  = 'BUT_CHANGE'.
-    ls_toolbar-icon      = icon_toggle_display_change.
-    ls_toolbar-quickinfo = 'Display - Change'.
+    ls_toolbar-function  = 'BUT_REFRESH'.
+    ls_toolbar-icon      = icon_refresh.
+    ls_toolbar-quickinfo = 'Refresh Data'.
     ls_toolbar-butn_type = 0.
     APPEND ls_toolbar TO e_object->mt_toolbar.
     CLEAR ls_toolbar.
+
+*    ls_toolbar-function  = 'BUT_CHANGE'.
+*    ls_toolbar-icon      = icon_toggle_display_change.
+*    ls_toolbar-quickinfo = 'Display - Change'.
+*    ls_toolbar-butn_type = 0.
+*    APPEND ls_toolbar TO e_object->mt_toolbar.
+*    CLEAR ls_toolbar.
 
     " Seperate
     ls_toolbar-function  = 'SEPARATOR'.
@@ -684,12 +698,20 @@ CLASS lcl_main IMPLEMENTATION.
     APPEND ls_toolbar TO e_object->mt_toolbar.
     CLEAR ls_toolbar.
 
+    ls_toolbar-function  = 'BUT_VOYADO'.
+    ls_toolbar-icon      = icon_system_mark. " Check ikonu
+    ls_toolbar-quickinfo = 'Check Missing Fields in Voyado'.
+    ls_toolbar-text      = 'Check Voyado'.
+    ls_toolbar-butn_type = 0.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+    CLEAR ls_toolbar.
+
   ENDMETHOD.
 
   METHOD handle_user_command.
     CASE e_ucomm.
       WHEN 'BUT_MAIL'.
-        me->tb_send_mail( ).
+        me->tb_prepare_mail( ).
 
       WHEN 'BUT_RESET'.
         me->tb_reset_flag( ).
@@ -700,11 +722,23 @@ CLASS lcl_main IMPLEMENTATION.
       WHEN 'DET_ZUPDT'.
         me->tb_details( iv_table = 'ZUPDT_BP_TOKEN' ).
 
+      WHEN 'EDIT_ZINS'.
+        me->tb_edit_policy( ).
+
       WHEN 'BUT_IMEI'.
         me->tb_find_imei( ).
 
       WHEN 'BUT_UPDT'.
         me->tb_update_token( ).
+
+      WHEN 'BUT_REFRESH'.
+        me->get_data( ).
+        mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+
+        MESSAGE 'Data refreshed successfully!' TYPE 'S'.
+
+      WHEN 'BUT_VOYADO'.
+        me->tb_check_voyado_btn( ).
     ENDCASE.
   ENDMETHOD.
 
@@ -722,38 +756,40 @@ CLASS lcl_main IMPLEMENTATION.
         me->tb_edit_comment( iv_index = e_row_id-index ).
 
       WHEN 'ZZBPREF'.
-        " Voyado entegrasyonu (Proxy) buraya gelecek!
+        " Voyado (Proxy)
         MESSAGE |Clicked Subscription ID: { ls_alv-zzbpref } (Coming soon!)| TYPE 'I'.
     ENDCASE.
   ENDMETHOD.
 
   METHOD handle_data_changed_finished.
-    IF e_modified = abap_true. "Anything changed?
+    IF e_modified = abap_true.
+      DATA: lv_commit TYPE abap_bool.
 
       LOOP AT et_good_cells ASSIGNING FIELD-SYMBOL(<lfs_cell>).
-
         READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX <lfs_cell>-row_id.
         IF sy-subrc = 0.
-
           CASE <lfs_cell>-fieldname.
             WHEN 'ZCOMMENT'.
-              " to update current display
               <lfs_alv>-zcomment = <lfs_cell>-value.
-
-              UPDATE zinsusale  "DB Update
+              UPDATE zinsusale
                  SET zcomment = @<lfs_alv>-zcomment
                WHERE polisenr = @<lfs_alv>-polisenr.
 
               IF sy-subrc = 0.
-                COMMIT WORK.
+                lv_commit = abap_true.
               ENDIF.
           ENDCASE.
         ENDIF.
       ENDLOOP.
 
+      IF lv_commit = abap_true.
+        COMMIT WORK.
+      ENDIF.
+
       mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
     ENDIF.
   ENDMETHOD.
+
   METHOD handle_menu_button.
     IF e_ucomm = 'BUT_DETAIL'.
 
@@ -767,10 +803,119 @@ CLASS lcl_main IMPLEMENTATION.
           fcode = 'DET_ZUPDT'
           text  = 'ZUPDT_BP_TOKEN'.
 
+      CALL METHOD e_object->add_function
+        EXPORTING
+          fcode = 'EDIT_ZINS'
+          text  = 'Edit Policy (SM30)'.
+
     ENDIF.
   ENDMETHOD.
 
-  METHOD tb_send_mail.
+  METHOD tb_check_voyado_missing.
+    DATA: lo_request TYPE REF TO zco_business_partner_by_elemen,
+          ls_output  TYPE zbusiness_partner_by_elements2.
+
+    " Determine Webshop ID based on Store code (Dynamic)
+    DATA(lv_webshop) = SWITCH string( iv_store(1)
+                         WHEN '1' THEN '1901'
+                         WHEN '3' THEN '3821'
+                         WHEN '4' THEN '4921'
+                         WHEN '7' THEN '7921'
+                         ELSE iv_store ). " If no match, send the store code itself
+
+    " Fill API Inputs
+    ls_output-business_partner_by_elements_q-business_partner_update_reques-business_partner_uuid-content = me->convert_guid_to_raw( iv_guid = iv_guid ).
+    ls_output-business_partner_by_elements_q-business_partner_update_reques-main_webshop = lv_webshop.
+
+    TRY.
+        CREATE OBJECT lo_request.
+        lo_request->business_partner_by_elements_q(
+          EXPORTING output = ls_output
+          IMPORTING input  = DATA(ls_input) ).
+      CATCH cx_ai_system_fault.
+        rv_missing = 'API_ERROR'.
+        RETURN.
+    ENDTRY.
+
+    DATA: lt_missing TYPE TABLE OF string.
+    LOOP AT ls_input-business_partner_by_elements_q-info-value ASSIGNING FIELD-SYMBOL(<namedvalue>).
+      " If error_code is filled, it indicates the information is missing/incorrect
+      IF <namedvalue>-error_code IS NOT INITIAL.
+        APPEND <namedvalue>-name TO lt_missing.
+      ENDIF.
+    ENDLOOP.
+
+    IF lt_missing IS NOT INITIAL.
+      CONCATENATE LINES OF lt_missing INTO rv_missing SEPARATED BY ', '.
+    ELSE.
+      rv_missing = 'ALL_OK'.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD tb_check_voyado_btn.
+    DATA(lt_rows) = me->get_selected_rows( ).
+    CHECK lt_rows IS NOT INITIAL.
+
+    IF lines( lt_rows ) > 1.
+      MESSAGE 'Please select only ONE row to check Voyado!' TYPE 'S' DISPLAY LIKE 'W'.
+      RETURN.
+    ENDIF.
+
+    READ TABLE lt_rows INTO DATA(ls_row) INDEX 1.
+    READ TABLE mt_alv INDEX ls_row-index ASSIGNING FIELD-SYMBOL(<lfs_alv>).
+    CHECK sy-subrc = 0.
+
+    IF <lfs_alv>-zzsubscr IS INITIAL.
+      MESSAGE | Policy: { <lfs_alv>-polisenr } is not a subscription! | TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+
+    IF <lfs_alv>-zzbpref IS INITIAL OR <lfs_alv>-zzbpref NS '-'.
+      MESSAGE 'A valid GUID is required to check Voyado!' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+
+    " Call the API and get the result
+    DATA(lv_missing) = me->tb_check_voyado_missing( iv_guid = CONV #( <lfs_alv>-zzbpref ) iv_store = <lfs_alv>-butikk ).
+
+    " Show Result to User
+    IF lv_missing = 'API_ERROR'.
+      MESSAGE 'Connection to Voyado failed! Please try again.' TYPE 'S' DISPLAY LIKE 'E'.
+    ELSEIF lv_missing = 'ALL_OK'.
+      MESSAGE 'All mandatory fields are filled in Voyado. No missing data!' TYPE 'S'.
+    ELSE.
+      " Show missing fields via Pop-up (for easier readability)
+      MESSAGE |Missing/Erroneous fields: { lv_missing }| TYPE 'I'.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD find_mail. "Find mail address from user name
+    DATA: lt_return TYPE TABLE OF bapiret2,
+          lt_smtp   TYPE TABLE OF bapiadsmtp.
+
+    DATA: lv_bapi_user TYPE xubname.
+
+    lv_bapi_user = iv_uname.
+    TRANSLATE lv_bapi_user TO UPPER CASE.
+
+    CALL FUNCTION 'BAPI_USER_GET_DETAIL'
+      EXPORTING
+        username = lv_bapi_user
+      TABLES
+        return   = lt_return
+        addsmtp  = lt_smtp.
+
+    READ TABLE lt_smtp INTO DATA(ls_smtp) INDEX 1.
+    IF sy-subrc = 0 AND ls_smtp-e_mail IS NOT INITIAL.
+      rv_email = ls_smtp-e_mail.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD tb_prepare_mail.
+* Color              <span style="color: red;"> TEXT </span>.
+* Background Color   <span style="background-color: yellow;" TEXT </span>'
+
     DATA(lt_rows) = me->get_selected_rows( ).
     CHECK lt_rows IS NOT INITIAL.
 
@@ -817,39 +962,77 @@ CLASS lcl_main IMPLEMENTATION.
 
       APPEND 'Hi VIP Team,' TO ls_queue-mail_body.
       APPEND ' ' TO ls_queue-mail_body.
-      APPEND 'We have received the following subscription insurance sales in SAP, but the VoyadoID (GUID) is missing.' TO ls_queue-mail_body.
+      APPEND 'We have received the following subscription insurance sales in SAP, but due to Voyado issues we can not create the Subscription.' TO ls_queue-mail_body.
       APPEND ' ' TO ls_queue-mail_body.
+
+      DATA: lt_valid_rows TYPE lvc_t_row.
+      CLEAR lt_valid_rows.
 
       LOOP AT ls_grp-rows INTO DATA(ls_grp_row).
         READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_a>) INDEX ls_grp_row-index.
 
+*------------------------Process for Missing GUID:--------------------------------------------*
         IF <lfs_a>-zzbpref IS INITIAL OR <lfs_a>-zzbpref NS '-'.
-          APPEND |Doc nr: { <lfs_a>-refnr }| TO ls_queue-mail_body.
+          APPEND ls_grp_row TO lt_valid_rows.
+*          me->add_message( iv_type = 'S' iv_text = |Policy: { <lfs_a>-polisenr }, Mail Id: #{ ls_queue-mail_id }, Sent!| ).
+
+          APPEND |We need Voyado ID for this sale { <lfs_a>-refnr } | TO ls_queue-mail_body.
+          APPEND |Customer information: | TO ls_queue-mail_body.
+          APPEND |<b>Name:</b> { <lfs_a>-name }|          TO ls_queue-mail_body.
+          APPEND |<b>Phone Nr:</b> { <lfs_a>-tlf }|       TO ls_queue-mail_body.
+          APPEND |<b>Mail:</b> { <lfs_a>-zz_elg_email } | TO ls_queue-mail_body.
+          APPEND '' TO ls_queue-mail_body.
+          APPEND '' TO ls_queue-mail_body.
+*---------------------------------------------------------------------------------------------*
         ELSE.
-          DATA(lv_missing_fields) = me->tb_check_voyado_missing( iv_guid = CONV #( <lfs_a>-zzbpref ) ).
-          IF lv_missing_fields IS NOT INITIAL.
-            APPEND |Doc nr: { <lfs_a>-refnr } (GUID: { <lfs_a>-zzbpref }) -> Missing Fields: { lv_missing_fields }| TO ls_queue-mail_body.
+*------------------------Process for Missing Info:--------------------------------------------*
+          DATA(lv_missing_fields) = me->tb_check_voyado_missing( iv_guid  = CONV #( <lfs_a>-zzbpref )
+                                                                iv_store  = <lfs_a>-butikk ).
+          IF lv_missing_fields = 'API_ERROR'.
+            me->add_message( iv_type = 'E' iv_text = |Policy: { <lfs_a>-polisenr }, API Error!| ).
+            CONTINUE.
+          ENDIF.
+
+          IF lv_missing_fields = 'ALL_OK'.
+            APPEND |<b>Doc nr:</b> { <lfs_a>-refnr } | TO ls_queue-mail_body.
+            APPEND |<b>VoyadoID:</b> { <lfs_a>-zzbpref } | TO ls_queue-mail_body.
+            APPEND |Do not miss any info but still fails. Can you check in Voyado for possible issues? (Country, Foreign Phone Nr, Contact Type..)| TO ls_queue-mail_body.
+            APPEND '' TO ls_queue-mail_body.
+          ELSE.
+            APPEND |<b>Doc nr:</b> { <lfs_a>-refnr } | TO ls_queue-mail_body.
+            APPEND |<b>GUID:</b> { <lfs_a>-zzbpref } | TO ls_queue-mail_body.
+            APPEND |<b>Missing Fields:</b> <i>{ lv_missing_fields }</i>| TO ls_queue-mail_body.
+            APPEND '' TO ls_queue-mail_body.
           ENDIF.
         ENDIF.
+*---------------------------------------------------------------------------------------------*
       ENDLOOP.
+      IF lt_valid_rows IS NOT INITIAL.
+        ls_queue-rows = lt_valid_rows.
+        APPEND ' ' TO ls_queue-mail_body.
 
-      APPEND ' ' TO ls_queue-mail_body.
-      APPEND 'Could you please check and provide us with the valid VoyadoIDs for these transactions so we can process them?' TO ls_queue-mail_body.
-      APPEND ' ' TO ls_queue-mail_body.
-      APPEND '<i>Note: If you find duplicate profiles for this customer, please ensure you merge them into the profile that contains the active insurance subscription.</i>' TO ls_queue-mail_body.
+        IF lines( ls_queue-rows ) > 1 .
+          APPEND 'Could you please check and provide us with the valid VoyadoIDs for these transactions so we can process them?' TO ls_queue-mail_body.
+        ELSE.
+          APPEND 'Could you please check and provide us with the valid VoyadoID for this transaction so we can process them?' TO ls_queue-mail_body.
+        ENDIF.
 
-      " Add to Table with Unique Key
-      INSERT ls_queue INTO TABLE gt_mail_queue.
+        APPEND ' ' TO ls_queue-mail_body.
+        APPEND '<i>Note: If you find duplicate profiles for this customer, please ensure you merge them into the profile that contains the active insurance subscription.</i>' TO ls_queue-mail_body.
+
+        INSERT ls_queue INTO TABLE gt_mail_queue. " Add to Table with Unique Key
+      ENDIF.
     ENDLOOP.
 
-    gv_queue_idx = 1.
-    CALL SCREEN 0200 STARTING AT 5 5 ENDING AT 118 33.
+    IF gt_mail_queue IS NOT INITIAL.
+      gv_queue_idx = 1.
+      CALL SCREEN 0200 STARTING AT 5 5 ENDING AT 118 33.
+      me->display_all_messages( ).
+    ELSE.
+      MESSAGE 'No valid policies to send mail for.' TYPE 'S' DISPLAY LIKE 'E'.
+    ENDIF.
 
     mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
-  ENDMETHOD.
-
-  METHOD tb_check_voyado_missing.
-    rv_missing = 'Email, Mobile Phone'. "Dummy. Will add Voyado proxy here.
   ENDMETHOD.
 
   METHOD tb_execute_mail.
@@ -879,15 +1062,20 @@ CLASS lcl_main IMPLEMENTATION.
                               i_subject = CONV #( <ls_mail>-mail_subj ) ).
         lo_send_request->set_document( lo_document ).
 
+        " From Addresses
         DATA: lo_sender TYPE REF TO if_sender_bcs.
         IF rb_from_it = abap_true.
           lo_sender = cl_cam_address_bcs=>create_internet_address( 'itsupport@power.no' ).
         ELSE.
-          lo_sender = cl_sapuser_bcs=>create( sy-uname ).
+*          lo_sender = cl_sapuser_bcs=>create( sy-uname ).
+          DATA(lv_sender_email) = me->find_mail( sy-uname ).
+          IF lv_sender_email IS INITIAL.
+            lv_sender_email = 'itsupport@power.no'. " Fallback (No mail address -> IT Support)
+          ENDIF.
+          lo_sender = cl_cam_address_bcs=>create_internet_address( CONV #( lv_sender_email ) ).
         ENDIF.
         lo_send_request->set_sender( lo_sender ).
 
-        " MULTIPLE EMAIL SUPPORT (To and CC)
         DATA: lt_emails TYPE TABLE OF string,
               lv_email  TYPE string.
 
@@ -897,19 +1085,41 @@ CLASS lcl_main IMPLEMENTATION.
         LOOP AT lt_emails INTO lv_email.
           CONDENSE lv_email.
           CHECK lv_email IS NOT INITIAL.
+          IF lv_email NA '@'.
+            DATA(lv_found_mail) = me->find_mail( CONV #( lv_email ) ).
+            IF lv_found_mail IS NOT INITIAL.
+              lv_email = lv_found_mail. " Uname to Mail
+            ELSE.
+              CONTINUE.
+            ENDIF.
+          ENDIF.
           DATA(lo_recipient) = cl_cam_address_bcs=>create_internet_address( CONV #( lv_email ) ).
           lo_send_request->add_recipient( i_recipient = lo_recipient ).
         ENDLOOP.
 
-        " CC Addresses
+        " --- CC (Copy) Addresses ---
         CLEAR lt_emails.
         IF <ls_mail>-mail_cc IS NOT INITIAL.
+          " Ensure consistent separator by replacing commas with semicolons
           REPLACE ALL OCCURRENCES OF ',' IN <ls_mail>-mail_cc WITH ';'.
           SPLIT <ls_mail>-mail_cc AT ';' INTO TABLE lt_emails.
+
           LOOP AT lt_emails INTO lv_email.
             CONDENSE lv_email.
             CHECK lv_email IS NOT INITIAL.
+
+            " SMART CHECK (Also applies to CC): If no '@' is found, try to find the email via method!
+            IF lv_email NA '@'.
+              lv_found_mail = me->find_mail( CONV #( lv_email ) ).
+              IF lv_found_mail IS NOT INITIAL.
+                lv_email = lv_found_mail.
+              ELSE.
+                CONTINUE.
+              ENDIF.
+            ENDIF.
+
             DATA(lo_cc) = cl_cam_address_bcs=>create_internet_address( CONV #( lv_email ) ).
+            " Add as CC recipient (i_copy = abap_true)
             lo_send_request->add_recipient( i_recipient = lo_cc i_copy = abap_true ).
           ENDLOOP.
         ENDIF.
@@ -918,7 +1128,7 @@ CLASS lcl_main IMPLEMENTATION.
         DATA(lv_sent) = lo_send_request->send( i_with_error_screen = abap_true ).
         IF lv_sent = abap_true.
           COMMIT WORK.
-          MESSAGE |Mail successfully added to queue for { <ls_mail>-country }!| TYPE 'S'.
+          rv_success = abap_true.
 
           LOOP AT <ls_mail>-rows INTO DATA(ls_sel_row).
             me->add_auto_comment( iv_index = ls_sel_row-index iv_action = |Mail sent. Ticket ID: #{ iv_mail_id }| ).
@@ -940,6 +1150,14 @@ CLASS lcl_main IMPLEMENTATION.
       READ TABLE mt_alv INDEX <lfs_rows>-index ASSIGNING FIELD-SYMBOL(<lfs_alv>).
       CHECK sy-subrc EQ 0."Continue to next row
 
+      IF <lfs_alv>-zzsubscr IS INITIAL.
+        me->add_message(
+          EXPORTING
+            iv_type = 'E'
+            iv_text = |Policy { <lfs_alv>-polisenr } is not a subscription. | ).
+        CONTINUE.
+      ENDIF.
+
       UPDATE zupdt_bp_token
         SET bprequestsent = @space
         WHERE refnr EQ @<lfs_alv>-refnr.
@@ -949,12 +1167,12 @@ CLASS lcl_main IMPLEMENTATION.
         me->add_message(
           EXPORTING
             iv_type = 'S'
-            iv_text = |Policy: { <lfs_alv>-polisenr } , Ref nr: { <lfs_alv>-refnr } is resetted | ).
+            iv_text = |Policy { <lfs_alv>-polisenr } , { <lfs_alv>-refnr } is resetted | ).
       ELSE.
         me->add_message(
           EXPORTING
             iv_type = 'E'
-            iv_text = |Could not find { <lfs_alv>-refnr } in table ZUPDT_BP_TOKEN | ).
+            iv_text = |Could not find { <lfs_alv>-refnr } in ZUPDT_BP_TOKEN | ).
       ENDIF.
 
     ENDLOOP.
@@ -963,15 +1181,15 @@ CLASS lcl_main IMPLEMENTATION.
       COMMIT WORK AND WAIT.
     ENDIF.
     me->display_all_messages( ).
-    mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+*    mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
   ENDMETHOD.
 
   METHOD tb_find_imei.
     DATA(lt_rows) = me->get_selected_rows( ).
     CHECK lt_rows IS NOT INITIAL.
-    DATA lv_imei TYPE sernr.
+
     IF lines( lt_rows ) > 1.
-      MESSAGE |Select only 1 line to find IMEI| TYPE 'S' DISPLAY LIKE 'W'.
+      MESSAGE 'Select only 1 line to find IMEI' TYPE 'S' DISPLAY LIKE 'W'.
       RETURN.
     ENDIF.
 
@@ -979,58 +1197,86 @@ CLASS lcl_main IMPLEMENTATION.
     READ TABLE mt_alv INDEX ls_row-index ASSIGNING FIELD-SYMBOL(<lfs_alv>).
     CHECK sy-subrc EQ 0.
 
-    " VBFA - VBELV = Refnr && VBTYP_N = 'J' => VEPO VBELN => SER06  VENUM => OBJK OBKNR => Get SERNR as IMEI
-    " If necessary add 0's
-    " DATA: lv_vbelv TYPE vbeln_von.
-    " lv_vbelv = |{ <lfs_alv>-refnr ALPHA = IN }|.
+    " 1. We use INTO TABLE instead of SELECT SINGLE
+    TYPES: BEGIN OF ty_imei,
+             sernr TYPE sernr,
+           END OF ty_imei.
+    DATA: lt_imei TYPE TABLE OF ty_imei.
 
-    SELECT SINGLE objk~sernr
+    SELECT objk~sernr
       FROM vbfa
       INNER JOIN vepo  ON vepo~vbeln  = vbfa~vbeln
       INNER JOIN ser06 ON ser06~venum = vepo~venum
       INNER JOIN objk  ON objk~obknr  = ser06~obknr
-      INTO @lv_imei
+      INTO TABLE @lt_imei
       WHERE vbfa~vbelv   = @<lfs_alv>-refnr
         AND vbfa~vbtyp_n = 'J'.
 
-    IF sy-subrc EQ 0.
-
-      DATA: lv_answer TYPE c.
-
-      CALL FUNCTION 'POPUP_TO_CONFIRM'
-        EXPORTING
-          titlebar              = 'IMEI Found!'
-          text_question         = |IMEI number { lv_imei } found. Do you want to save it in ZINSUSALE?|
-          text_button_1         = 'OK'
-          text_button_2         = 'NO'
-          display_cancel_button = abap_false
-        IMPORTING
-          answer                = lv_answer.
-
-      IF lv_answer = '1'. " 1 Button (OK) clicked
-
-        UPDATE zinsusale
-           SET zz_imei     = @lv_imei
-         WHERE polisenr = @<lfs_alv>-polisenr.
-
-        IF sy-subrc = 0.
-          COMMIT WORK.
-
-          " Update ALV?
-*           <lfs_alv>-imei = lv_imei.
-*           mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
-
-          MESSAGE |IMEI { lv_imei } successfully added to { <lfs_alv>-polisenr }| TYPE 'S'.
-        ELSE.
-          MESSAGE 'Error occurred while updating ZINSUSALE!' TYPE 'S' DISPLAY LIKE 'E'.
-        ENDIF.
-
-      ELSE. " 1 Button (NO) clicked
-        MESSAGE 'Action cancelled. Nothing changed in ZINSUSALE.' TYPE 'S'.
-      ENDIF.
-
-    ELSE.
+    IF sy-subrc <> 0 OR lt_imei IS INITIAL.
       MESSAGE 'Could not find any IMEI in document flow for this record!' TYPE 'S' DISPLAY LIKE 'W'.
+      RETURN.
+    ENDIF.
+
+    " Clean up duplicate IMEIs
+    SORT lt_imei BY sernr.
+    DELETE ADJACENT DUPLICATES FROM lt_imei COMPARING sernr.
+
+    DATA: lv_selected_imei TYPE sernr.
+
+    " 2. DECISION MECHANISM (The Highlight)
+    IF lines( lt_imei ) = 1.
+      lv_selected_imei = lt_imei[ 1 ]-sernr. " If there's only 1, take it directly
+    ELSE.
+      " If there are more than 1, trigger the standard SAP Selection Pop-up!
+      DATA: lt_return TYPE TABLE OF ddshretval.
+      CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+        EXPORTING
+          retfield     = 'SERNR'
+          value_org    = 'S'
+          window_title = 'Multiple IMEIs Found! Select one:'
+        TABLES
+          value_tab    = lt_imei
+          return_tab   = lt_return
+        EXCEPTIONS
+          OTHERS       = 3.
+
+      IF sy-subrc = 0 AND lt_return IS NOT INITIAL.
+        lv_selected_imei = lt_return[ 1 ]-fieldval. " Take what the user selected
+      ELSE.
+        MESSAGE 'Action cancelled.' TYPE 'S'.
+        RETURN.
+      ENDIF.
+    ENDIF.
+
+    " 3. RECORDING AND CONFIRMATION PART
+    DATA: lv_answer TYPE c.
+    CALL FUNCTION 'POPUP_TO_CONFIRM'
+      EXPORTING
+        titlebar              = 'IMEI Found!'
+        text_question         = |IMEI number { lv_selected_imei } found. Do you want to save it in ZINSUSALE?|
+        text_button_1         = 'OK'
+        text_button_2         = 'NO'
+        display_cancel_button = abap_false
+      IMPORTING
+        answer                = lv_answer.
+
+    IF lv_answer = '1'. " OK clicked
+      UPDATE zinsusale
+         SET zz_imei  = @lv_selected_imei
+       WHERE polisenr = @<lfs_alv>-polisenr.
+
+      IF sy-subrc = 0.
+        COMMIT WORK.
+        " If you want to see the IMEI info immediately on the ALV screen, you can uncomment the next 2 lines:
+        <lfs_alv>-zz_imei = lv_selected_imei.
+        mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+
+        MESSAGE |IMEI { lv_selected_imei } successfully added to { <lfs_alv>-polisenr }| TYPE 'S'.
+      ELSE.
+        MESSAGE 'Error occurred while updating ZINSUSALE!' TYPE 'S' DISPLAY LIKE 'E'.
+      ENDIF.
+    ELSE.
+      MESSAGE 'Action cancelled. Nothing changed in ZINSUSALE.' TYPE 'S'.
     ENDIF.
 
   ENDMETHOD.
@@ -1119,6 +1365,47 @@ CLASS lcl_main IMPLEMENTATION.
     ENDIF.
   ENDMETHOD.
 
+  METHOD tb_edit_policy.
+    DATA(lt_rows) = me->get_selected_rows( ).
+    CHECK lt_rows IS NOT INITIAL.
+
+    DATA: lt_sellist TYPE TABLE OF vimsellist,
+          ls_sellist TYPE vimsellist.
+
+    LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<lfs_rows>).
+      READ TABLE mt_alv INDEX <lfs_rows>-index ASSIGNING FIELD-SYMBOL(<lfs_alv>).
+      CHECK sy-subrc EQ 0.
+
+      " Prepare SM30 Filter (POLISENR = Selected Policy)
+      CLEAR ls_sellist.
+      ls_sellist-viewfield = 'POLISENR'.
+      ls_sellist-operator  = 'EQ'.
+      ls_sellist-value     = <lfs_alv>-polisenr.
+      ls_sellist-and_or    = 'OR'. " If multiple rows are selected, connect with OR
+      APPEND ls_sellist TO lt_sellist.
+    ENDLOOP.
+
+    " RULE: In the SM30 filter, the AND/OR connector of the last row must be left blank
+    IF lt_sellist IS NOT INITIAL.
+      DATA(lv_last) = lines( lt_sellist ).
+      lt_sellist[ lv_last ]-and_or = space.
+    ENDIF.
+
+    " Call SM30 (Action 'U' = Update / Change Mode)
+    CALL FUNCTION 'VIEW_MAINTENANCE_CALL'
+      EXPORTING
+        action      = 'U'
+        view_name   = 'ZINSUSALE'
+      TABLES
+        dba_sellist = lt_sellist
+      EXCEPTIONS
+        OTHERS      = 15.
+
+    IF sy-subrc <> 0.
+      MESSAGE 'Error opening SM30 for ZINSUSALE! Check if it exists in ZINSUSALE' TYPE 'S' DISPLAY LIKE 'E'.
+    ENDIF.
+  ENDMETHOD.
+
   METHOD tb_update_token.
     DATA(lt_rows) = me->get_selected_rows( ).
 
@@ -1131,10 +1418,14 @@ CLASS lcl_main IMPLEMENTATION.
     READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX ls_row-index.
     CHECK sy-subrc = 0.
 
-    " Ekran degiskenlerini tertemiz yapalim
+    IF <lfs_alv>-zzsubscr IS INITIAL.
+      MESSAGE | Policy: { <lfs_alv>-polisenr } is not a subscription! | TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+    " Let's clear the screen variables completely
     CLEAR: zupdt_bp_token-partner_guid, gv_scr_guid, gv_scr_token, gv_scr_refnr, gv_scr_webshop, gv_scr_bp, gv_scr_msg, gv_refnr_exist.
 
-    " ALV'den verileri SADECE 1 KERE al (Senin talimatin)
+    " Take the data from ALV ONLY ONCE (as per your instruction)
     gv_scr_refnr = <lfs_alv>-refnr.
     gv_scr_token = <lfs_alv>-zztoken.
 
@@ -1146,9 +1437,8 @@ CLASS lcl_main IMPLEMENTATION.
     ENDCASE.
 
     gv_scr_guid = me->convert_guid_to_hyphen( iv_raw = <lfs_alv>-zzbpref ).
-*    zupdt_bp_token-partner_guid = me->convert_guid_to_raw( iv_guid = gv_scr_guid ).
 
-    " Arka planda sadece bilgi amaciyla eski kayit kontrolu yap
+    " Perform old record check in the background for informational purposes only
     SELECT SINGLE refnr FROM zupdt_bp_token INTO @DATA(lv_dummy) WHERE refnr = @gv_scr_refnr.
     IF sy-subrc = 0.
       gv_refnr_exist = abap_true.
@@ -1159,7 +1449,7 @@ CLASS lcl_main IMPLEMENTATION.
       gv_scr_icon1 = gv_scr_icon2 = gv_scr_icon3 = gv_scr_icon4 = icon_green_light.
     ENDIF.
 
-    " Ekrani cagir!
+    " Call the screen!
     CALL SCREEN 0400 STARTING AT 10 5 ENDING AT 115 15.
 
     IF sy-ucomm = 'SC_SE16N'.
@@ -1168,13 +1458,12 @@ CLASS lcl_main IMPLEMENTATION.
     ENDIF.
   ENDMETHOD.
 
-
   METHOD save_token.
-    " 1. Ekrandan gelen gizli boşlukları temizle
+    " Clean hidden spaces coming from the screen
     CONDENSE gv_scr_guid NO-GAPS.
-    CONDENSE gv_scr_token. " Token formatını bozmamak için sadece CONDENSE yapıyoruz
+    CONDENSE gv_scr_token. " Only use CONDENSE to avoid breaking the token format
 
-    " 2. Zorunlu Alan Kontrolleri
+    " Mandatory Field Checks
     IF gv_scr_token IS INITIAL.
       MESSAGE 'Token / Card Number is mandatory!' TYPE 'S' DISPLAY LIKE 'E'.
       RETURN.
@@ -1186,24 +1475,24 @@ CLASS lcl_main IMPLEMENTATION.
     ENDIF.
 
     " -----------------------------------------------------------------------
-    " 3. KATI GUID VALIDASYONU (Sadece 36 Karakter ve Tireli Format)
+    "  GUID VALIDATION (Only 36 Characters and Hyphenated Format)
     " -----------------------------------------------------------------------
     DATA(lv_clean_guid) = gv_scr_guid.
     DATA(lv_guid_len)   = strlen( lv_clean_guid ).
 
-    " Test 1: Sadece 36 karakter kabul ediyoruz! (32 karakter yasaklandı)
+    " Test 1: We only accept exactly 36 characters!
     IF lv_guid_len <> 36.
       MESSAGE 'Invalid length! You must enter the full 36-character hyphenated GUID.' TYPE 'S' DISPLAY LIKE 'E'.
       RETURN.
     ENDIF.
 
-    " Test 2: Geçerli Karakter Kontrolü (Sadece Hexadecimal ve Tire)
+    " Test 2: Valid Character Check (Only Hexadecimal and Hyphens)
     IF lv_clean_guid CN '0123456789ABCDEFabcdef-'.
       MESSAGE 'Invalid characters! A GUID can only contain numbers (0-9), letters (A-F), and hyphens.' TYPE 'S' DISPLAY LIKE 'E'.
       RETURN.
     ENDIF.
 
-    " Test 3: Tirelerin konumu tam olarak 8-4-4-4-12 formatında olmalı!
+    " Test 3: Hyphen positions must be exactly in 8-4-4-4-12 format!
     IF lv_clean_guid+8(1)  <> '-' OR
        lv_clean_guid+13(1) <> '-' OR
        lv_clean_guid+18(1) <> '-' OR
@@ -1213,16 +1502,16 @@ CLASS lcl_main IMPLEMENTATION.
     ENDIF.
     " -----------------------------------------------------------------------
 
-    " 4. Merkezi metod ile RAW formata çevir (ZUPDT formatı)
+    "  Convert to RAW format using central method (ZUPDT format)
     DATA(lv_bpguid_raw) = me->convert_guid_to_raw( iv_guid = lv_clean_guid ).
 
-    " Son Güvenlik Duvarı: Çeviri herhangi bir sebeple çökerse işlemi durdur!
+    " Stop processing if the conversion fails for any reason!
     IF lv_bpguid_raw IS INITIAL.
       MESSAGE 'Critical Error: The provided GUID is corrupted and cannot be processed.' TYPE 'S' DISPLAY LIKE 'E'.
       RETURN.
     ENDIF.
 
-    " 5. BİREBİR AYNI KAYIT KONTROLÜ (Artık Uyarı Veriyor, Engellemiyor)
+    " EXACT RECORD CHECK
     SELECT SINGLE partner_guid INTO @DATA(lv_check_full)
       FROM zupdt_bp_token
      WHERE partner_guid = @lv_bpguid_raw
@@ -1247,7 +1536,7 @@ CLASS lcl_main IMPLEMENTATION.
       ENDIF.
 
     ELSEIF gv_refnr_exist = abap_true.
-      " 6. FARKLI KAYIT AMA AYNI BELGE KONTROLÜ (Birebir aynı değilse ama belgeye ait başka kayıt varsa)
+      " DIFFERENT RECORD BUT SAME DOCUMENT CHECK (If not exact match but another record exists for the doc)
       DATA: lv_ans_diff TYPE c.
       CALL FUNCTION 'POPUP_TO_CONFIRM'
         EXPORTING
@@ -1265,7 +1554,6 @@ CLASS lcl_main IMPLEMENTATION.
       ENDIF.
     ENDIF.
 
-    " 7. TEMIZ KAYIT İŞLEMİ
     DATA: ls_zupdt TYPE zupdt_bp_token.
     ls_zupdt-partner_guid = lv_bpguid_raw.
     ls_zupdt-token        = gv_scr_token.
@@ -1279,7 +1567,6 @@ CLASS lcl_main IMPLEMENTATION.
     IF sy-subrc = 0.
       COMMIT WORK AND WAIT.
 
-      " 8. AKILLI YORUM VE ALV GÜNCELLEMESİ
       READ TABLE me->get_selected_rows( ) INTO DATA(ls_row) INDEX 1.
       READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX ls_row-index.
 
@@ -1287,14 +1574,25 @@ CLASS lcl_main IMPLEMENTATION.
       ls_new_alv-zzbpref = lv_clean_guid.
       ls_new_alv-zztoken = gv_scr_token.
 
-      " Kıyaslamayı, yorum metnini ve DB Update'i merkeze paslıyoruz
-      me->add_auto_comment(
-        iv_index    = ls_row-index
-        iv_action   = 'Token Update Req.'
-        is_new_data = ls_new_alv ).
+      UPDATE zinsusale
+           SET zzbpref = @lv_clean_guid,
+               zztoken = @gv_scr_token
+         WHERE refnr   = @<lfs_alv>-refnr
+         AND polisenr =  @<lfs_alv>-polisenr.
 
-      MESSAGE 'New record successfully inserted!' TYPE 'S'.
-      LEAVE TO SCREEN 0. " Her şey harika, ekranı kapat.
+      IF sy-subrc = 0.
+        " Pass the comparison, comment text, and DB Update to central method
+        me->add_auto_comment(
+          iv_index    = ls_row-index
+          iv_action   = 'Token Update Req.'
+          is_new_data = ls_new_alv ).
+
+        <lfs_alv>-zzbpref = lv_clean_guid.
+        <lfs_alv>-zztoken = gv_scr_token.
+        COMMIT WORK AND WAIT.
+        MESSAGE 'New record successfully inserted!' TYPE 'S'.
+        LEAVE TO SCREEN 0.
+      ENDIF.
     ELSE.
       MESSAGE 'Database error during insertion!' TYPE 'S' DISPLAY LIKE 'E'.
     ENDIF.
@@ -1309,14 +1607,14 @@ CLASS lcl_main IMPLEMENTATION.
       TRY.
           rv_raw = cl_soap_wsrmb_helper=>convert_uuid_hyphened_to_raw( lv_clean ).
         CATCH cx_root.
-          CLEAR rv_raw. " Çökerse 00000000000000000000000000000000 olur
+          CLEAR rv_raw. " If it fails, it becomes 00000000000000000000000000000000
       ENDTRY.
     ELSE.
-      " TİRESİZ OLSA BİLE GEÇERLİ BİR HEX Mİ DİYE ZORLA TEST ET!
+      " EVEN IF WITHOUT HYPHENS, FORCE TEST IF IT IS A VALID HEX!
       TRY.
           rv_raw = CONV bu_partner_guid( lv_clean ).
         CATCH cx_root.
-          CLEAR rv_raw. " Çökerse 00000000000000000000000000000000 olur
+          CLEAR rv_raw. " If it fails, it becomes 00000000000000000000000000000000
       ENDTRY.
     ENDIF.
   ENDMETHOD.
@@ -1326,40 +1624,19 @@ CLASS lcl_main IMPLEMENTATION.
     CONDENSE lv_clean NO-GAPS.
     CHECK lv_clean IS NOT INITIAL.
 
-    IF lv_clean NA '-'. " ALV'den tiresiz (RAW) gelirse tireliye çevir
+    IF lv_clean NA '-'. " If it comes from ALV without hyphens (RAW), convert to hyphenated
       TRY.
           DATA(lv_raw_bytes) = CONV bu_partner_guid( lv_clean ).
           rv_guid = cl_soap_wsrmb_helper=>convert_uuid_raw_to_hyphened( lv_raw_bytes ).
         CATCH cx_root.
-          rv_guid = lv_clean. " Çevrilemezse olduğu gibi bırak, Save'deki 32/36 kontrolü yakalar
+          rv_guid = lv_clean. " If it cannot be converted, leave as is; the 32/36 check in Save will catch it
       ENDTRY.
     ELSE.
-      rv_guid = lv_clean. " Zaten tireli
+      rv_guid = lv_clean. " Already hyphenated
     ENDIF.
 
     TRANSLATE rv_guid TO UPPER CASE.
   ENDMETHOD.
-
-*  METHOD add_auto_comment.
-*    READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX iv_index.
-*    CHECK sy-subrc = 0.
-*
-*    DATA(lv_prefix) = |{ sy-uname } { sy-datum DATE = USER }: |.
-*    IF <lfs_alv>-zcomment IS INITIAL.
-*      <lfs_alv>-zcomment = |{ lv_prefix }{ iv_text }|.
-*    ELSE.
-*      <lfs_alv>-zcomment = |{ lv_prefix }{ iv_text } // { <lfs_alv>-zcomment }|.
-*    ENDIF.
-*
-*    UPDATE zinsusale
-*       SET zcomment = @<lfs_alv>-zcomment
-*     WHERE polisenr = @<lfs_alv>-polisenr.
-*
-*    IF sy-subrc = 0.
-*      COMMIT WORK.
-*      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
-*    ENDIF.
-*  ENDMETHOD.
 
   METHOD add_auto_comment.
     READ TABLE me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>) INDEX iv_index.
@@ -1369,33 +1646,33 @@ CLASS lcl_main IMPLEMENTATION.
           lv_changed     TYPE string,
           lv_action_text TYPE string.
 
-    lv_action_text = iv_action. " Örn: 'Token Update Req.' veya 'Mail Sent.'
+    lv_action_text = iv_action. " E.g.: 'Token Update Req.' or 'Mail Sent.'
 
-    " 1. EĞER YENİ VERİ GELDİYSE AKILLI KIYASLAMA YAP
+    " 1. IF NEW DATA IS PROVIDED, COMPARISON
     IF is_new_data IS SUPPLIED.
 
-      " -- GUID Kıyaslaması --
+      " -- GUID Comparison --
       IF is_new_data-zzbpref IS NOT INITIAL AND <lfs_alv>-zzbpref IS INITIAL.
         lv_added = lv_added && |GUID, |.
       ELSEIF is_new_data-zzbpref <> <lfs_alv>-zzbpref.
         lv_changed = lv_changed && |GUID, |.
       ENDIF.
 
-      " -- Token Kıyaslaması --
+      " -- Token Comparison --
       IF is_new_data-zztoken IS NOT INITIAL AND <lfs_alv>-zztoken IS INITIAL.
         lv_added = lv_added && |Token, |.
       ELSEIF is_new_data-zztoken <> <lfs_alv>-zztoken.
         lv_changed = lv_changed && |Token, |.
       ENDIF.
 
-      " -- IMEI Kıyaslaması --
+      " -- IMEI Comparison --
       IF is_new_data-zz_imei IS NOT INITIAL AND <lfs_alv>-zz_imei IS INITIAL.
         lv_added = lv_added && |IMEI, |.
       ELSEIF is_new_data-zz_imei <> <lfs_alv>-zz_imei.
         lv_changed = lv_changed && |IMEI, |.
       ENDIF.
 
-      " Çıktıyı Formatlama (Sondaki ', ' virgül ve boşlukları temizle)
+      " Formatting the Output (Clean the trailing ', ' comma and spaces)
       IF lv_added IS NOT INITIAL.
         DATA(lv_len_a) = strlen( lv_added ) - 2.
         lv_added = lv_added(lv_len_a).
@@ -1410,7 +1687,7 @@ CLASS lcl_main IMPLEMENTATION.
 
     ENDIF.
 
-    " 2. YORUMU OLUŞTUR VE ALV'Yİ GÜNCELLE
+    " 2. CREATE COMMENT AND UPDATE ALV
     DATA(lv_prefix) = |{ sy-uname } { sy-datum DATE = USER }: |.
 
     IF <lfs_alv>-zcomment IS INITIAL.
@@ -1419,7 +1696,7 @@ CLASS lcl_main IMPLEMENTATION.
       <lfs_alv>-zcomment = |{ lv_prefix }{ lv_action_text } // { <lfs_alv>-zcomment }|.
     ENDIF.
 
-    " 3. VERİTABANI GÜNCELLEMESİ (SADECE YORUM ALANI!)
+    " 3. DATABASE UPDATE (COMMENT FIELD ONLY!)
     UPDATE zinsusale
        SET zcomment = @<lfs_alv>-zcomment
      WHERE polisenr = @<lfs_alv>-polisenr.
@@ -1441,13 +1718,23 @@ CLASS lcl_main IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD add_message.
-    APPEND VALUE #( type       = iv_type
-                    message    = iv_text
-                    id         = '00'
-                    number     = '398'
-                    message_v1 = iv_text ) TO me->mt_messages.
-  ENDMETHOD.
+    DATA: ls_msg  TYPE bapiret2,
+          lv_text TYPE char200.
 
+    lv_text = iv_text.
+
+    ls_msg-type       = iv_type.
+    ls_msg-id         = '00'.
+    ls_msg-number     = '398'.
+    ls_msg-message    = iv_text.
+
+    ls_msg-message_v1 = lv_text(50).
+    ls_msg-message_v2 = lv_text+50(50).
+    ls_msg-message_v3 = lv_text+100(50).
+    ls_msg-message_v4 = lv_text+150(50).
+
+    APPEND ls_msg TO me->mt_messages.
+  ENDMETHOD.
   METHOD display_all_messages.
     CHECK me->mt_messages IS NOT INITIAL.
 
