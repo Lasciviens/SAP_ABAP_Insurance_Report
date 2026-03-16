@@ -7,7 +7,8 @@
 *       text
 *----------------------------------------------------------------------*
 MODULE status_0300 OUTPUT.
-  TYPE-POOLS: vrm.
+  SET PF-STATUS 'STATUS_0100'.
+  SET TITLEBAR  'TITLE_0300' .
   DATA lt_values TYPE vrm_values.
 
   IF lt_values IS INITIAL.
